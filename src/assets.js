@@ -13,6 +13,10 @@ export const ASSETS = Object.freeze({
   skeleton: 'skeleton_profile.json',
 });
 
+export const OPTIONAL_ASSETS = Object.freeze({
+  bodyAlbedo: 'uv_body_albedo.png',
+});
+
 export function validateIdentity(id) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id)) {
     throw new Error('Identity must be 1–64 ASCII letters, digits, underscores or hyphens.');
@@ -71,7 +75,11 @@ export class AssetLibrary {
       throw new Error('Unsupported or mismatched identity manifest.');
     }
     const paths = {};
-    for (const [key, filename] of Object.entries(ASSETS)) {
+    const assets = { ...ASSETS };
+    for (const [key, filename] of Object.entries(OPTIONAL_ASSETS)) {
+      if (Object.hasOwn(manifest.assets ?? {}, key)) assets[key] = filename;
+    }
+    for (const [key, filename] of Object.entries(assets)) {
       const path = join(directory, filename);
       const file = await regularFile(path);
       const record = manifest.assets?.[key];
@@ -94,7 +102,16 @@ export class AssetLibrary {
     await mkdir(staging);
     try {
       const records = {};
-      for (const [key, filename] of Object.entries(ASSETS)) {
+      const assets = { ...ASSETS };
+      for (const [key, filename] of Object.entries(OPTIONAL_ASSETS)) {
+        try {
+          await lstat(join(resolve(sourceDirectory), filename));
+          assets[key] = filename;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      for (const [key, filename] of Object.entries(assets)) {
         const source = join(resolve(sourceDirectory), filename);
         await regularFile(source);
         const target = join(staging, filename);

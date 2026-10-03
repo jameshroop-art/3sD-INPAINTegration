@@ -2,6 +2,7 @@ import { lstat, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ASSETS } from './assets.js';
+import { refineSequence, validateCamera } from './refinement.js';
 
 export const VIEW_ANGLES = Object.freeze([
   'left_profile', 'left_three_quarter', 'front', 'right_three_quarter', 'right_profile',
@@ -17,12 +18,7 @@ async function validateViews(views) {
   }
   for (const [index, view] of views.entries()) {
     if (view.angle !== VIEW_ANGLES[index]) throw new Error(`Expected view ${VIEW_ANGLES[index]}.`);
-    const camera = view.camera;
-    if (!camera || !['intrinsics', 'worldToCamera'].every(key =>
-      Array.isArray(camera[key]) && camera[key].length === (key === 'intrinsics' ? 9 : 16) &&
-      camera[key].every(Number.isFinite))) {
-      throw new Error('Each view requires finite 3×3 intrinsics and 4×4 worldToCamera matrices.');
-    }
+    validateCamera(view.camera);
     for (const key of ['plate', 'hairMask']) {
       if (typeof view[key] !== 'string') throw new Error(`Missing ${key} path.`);
       const stat = await lstat(view[key]);
@@ -35,6 +31,33 @@ function requireMethods(backend, methods) {
   for (const name of methods) {
     if (typeof backend?.[name] !== 'function') throw new Error(`Backend must implement ${name}().`);
   }
+}
+
+async function render(bundle, request, { physics, renderer, diffusion }, feedback) {
+  requireMethods(physics, ['simulate']);
+  requireMethods(renderer, ['render']);
+  requireMethods(diffusion, ['inpaint']);
+  const { time, dynamics, scene, pose, camera, yaw } = request;
+  if (!Number.isFinite(time) || time < 0) throw new Error('Frame time must be finite and nonnegative.');
+  const curves = await physics.simulate({
+    groom: bundle.paths.groom,
+    colliders: [bundle.paths.head, bundle.paths.body],
+    scalp: bundle.paths.scalp,
+    skeleton: bundle.paths.skeleton,
+    time, dynamics, pose,
+    ...(feedback ? { state: feedback.state } : {}),
+  });
+  const maps = await renderer.render({
+    bundle, curves, scene, pose, time, camera, yaw,
+    ...(feedback ? { state: feedback.state } : {}),
+  });
+  for (const key of ['baldComposite', 'hairMask', 'depth', 'lineart']) {
+    if (maps?.[key] == null) throw new Error(`Renderer must provide ${key}.`);
+  }
+  return diffusion.inpaint({
+    ...maps, identity: bundle.identity, time,
+    ...(feedback ? { camera, yaw, identityEmbedding: feedback.identityEmbedding, controlDepth: maps.depth } : {}),
+  });
 }
 
 export class DigitalDoublePipeline {
@@ -62,22 +85,10 @@ export class DigitalDoublePipeline {
   async renderFrame(identity, request, { physics, renderer, diffusion }) {
     const bundle = await this.library.load(identity);
     if (!bundle) throw new Error(`Unknown identity: ${identity}`);
-    requireMethods(physics, ['simulate']);
-    requireMethods(renderer, ['render']);
-    requireMethods(diffusion, ['inpaint']);
-    const { time, dynamics, scene, pose } = request;
-    if (!Number.isFinite(time) || time < 0) throw new Error('Frame time must be finite and nonnegative.');
-    const curves = await physics.simulate({
-      groom: bundle.paths.groom,
-      colliders: [bundle.paths.head, bundle.paths.body],
-      scalp: bundle.paths.scalp,
-      skeleton: bundle.paths.skeleton,
-      time, dynamics, pose,
-    });
-    const maps = await renderer.render({ bundle, curves, scene, pose, time });
-    for (const key of ['baldComposite', 'hairMask', 'depth', 'lineart']) {
-      if (maps?.[key] == null) throw new Error(`Renderer must provide ${key}.`);
-    }
-    return diffusion.inpaint({ ...maps, identity, time });
+    return render(bundle, request, { physics, renderer, diffusion });
+  }
+
+  async refineSequence(sourceIdentity, targetIdentity, requests, adapters) {
+    return refineSequence(this.library, sourceIdentity, targetIdentity, requests, adapters, render);
   }
 }
