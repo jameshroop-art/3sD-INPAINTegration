@@ -77,13 +77,13 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
     let rejectedFrames = 0;
     for (const [index, request] of requests.entries()) {
       const frame = await render(bundle, request, renderAdapters, { state, identityEmbedding });
-      const extracted = await feedback.extract({ frame, request, state });
+      const extracted = await feedback.extract({ frame, request });
       validateObservations(extracted);
       const accepted = await feedback.checkIdentity({ frame, observations: extracted, identityEmbedding, request });
       if (typeof accepted !== 'boolean') throw new Error('checkIdentity must return a boolean.');
       if (accepted) {
         const hairMask = await feedback.smoothHair({
-          frame, observations: extracted, previous, request, state,
+          frame, observations: extracted, previous, request,
         });
         if (hairMask == null) throw new Error('smoothHair must return a hair mask.');
         const observations = { ...extracted, hairMask };
@@ -99,6 +99,8 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
       if (onFrame) await onFrame({ frame, index, accepted });
     }
     if (acceptedFrames === 0) throw new Error('No frames passed the identity guard; no refined asset published.');
+    // Require a fresh body-texture export even when the source already has one.
+    await rm(join(directory, OPTIONAL_ASSETS.bodyAlbedo), { force: true });
     await feedback.finalize({
       state, bundle, directory, assets: { ...ASSETS, ...OPTIONAL_ASSETS },
       acceptedFrames, rejectedFrames,

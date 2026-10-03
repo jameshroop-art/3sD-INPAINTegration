@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -66,7 +66,9 @@ async function fixture(t) {
         calls.push('initialize');
         return { state, identityEmbedding: new Float32Array([1, 0]) };
       },
-      async extract({ frame }) {
+      async extract(input) {
+        assert.equal(Object.hasOwn(input, 'state'), false);
+        const { frame } = input;
         assert.ok(Buffer.isBuffer(frame.buffer));
         calls.push(`extract:${frame.time}`);
         return observations();
@@ -121,6 +123,7 @@ test('confidence atlas validates whole batches without partial writes', () => {
     { index: 0, confidence: NaN, rgb: [1, 2, 3] },
     { index: 0, confidence: 1.1, rgb: [1, 2, 3] },
     { index: 0, confidence: 1, rgb: [1, 2, 256] },
+    { index: 0, confidence: 1, rgb: Array(3) },
     { index: 0, confidence: 1, rgb: [1, 2, 3], visible: 'yes' },
     null,
   ]) {
@@ -250,4 +253,47 @@ test('optional body albedo is not required by legacy bundles', async t => {
   const f = await fixture(t);
   assert.equal(f.original.paths.bodyAlbedo, undefined);
   assert.equal(OPTIONAL_ASSETS.bodyAlbedo, 'uv_body_albedo.png');
+});
+
+test('callback failure does not publish partially refined state', async t => {
+  const f = await fixture(t);
+  f.adapters.onFrame = async () => { throw new Error('stream failed'); };
+  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames, f.adapters), /stream failed/);
+  assert.equal(f.state.revision, 1);
+  assert.equal(f.calls.includes('finalize'), false);
+  assert.equal(await f.library.load('refined'), null);
+  assert.ok(await f.library.load('original'));
+  await assert.rejects(readdir(f.workspace()), { code: 'ENOENT' });
+});
+
+test('optional body albedo must be a regular file, not a symlink', async t => {
+  const f = await fixture(t);
+  f.adapters.feedback.finalize = async ({ directory, assets }) => {
+    await symlink(f.original.paths.albedo, join(directory, assets.bodyAlbedo));
+  };
+  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 1), f.adapters), /body albedo/);
+  assert.equal(await f.library.load('refined'), null);
+});
+
+test('refinement cannot overwrite an existing target', async t => {
+  const f = await fixture(t);
+  await f.library.publish('existing', f.original.directory);
+  await assert.rejects(f.pipeline.refineSequence('original', 'existing', f.frames, f.adapters), /already exists/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(await readFile((await f.library.load('existing')).paths.head, 'utf8'), 'original mesh_head.obj');
+});
+
+test('refining a textured source requires fresh body-albedo export', async t => {
+  const f = await fixture(t);
+  await f.pipeline.refineSequence('original', 'textured', f.frames.slice(0, 1), f.adapters);
+  const source = await f.library.load('textured');
+  f.adapters.feedback.initialize = async () => ({ state: f.state, identityEmbedding: [1, 0] });
+  f.adapters.feedback.finalize = async () => {};
+  await assert.rejects(
+    f.pipeline.refineSequence('textured', 'stale', f.frames.slice(0, 1), f.adapters),
+    /ENOENT/,
+  );
+  assert.equal(await f.library.load('stale'), null);
+  assert.equal(await readFile(source.paths.bodyAlbedo, 'utf8'), 'test body albedo');
+  assert.deepEqual((await f.library.load('textured')).manifest, source.manifest);
 });

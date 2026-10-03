@@ -22,7 +22,7 @@ export class ConfidenceAtlas {
           sample.index >= this.confidence.length || !Number.isFinite(sample.confidence) ||
           sample.confidence < 0 || sample.confidence > 1 ||
           !Array.isArray(sample.rgb) || sample.rgb.length !== 3 ||
-          !sample.rgb.every(value => Number.isInteger(value) && value >= 0 && value <= 255) ||
+          !Array.from(sample.rgb).every(value => Number.isInteger(value) && value >= 0 && value <= 255) ||
           (sample.visible !== undefined && typeof sample.visible !== 'boolean')) {
         throw new Error('Invalid projected texel sample.');
       }
