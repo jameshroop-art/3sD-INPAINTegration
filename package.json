@@ -1,0 +1,19 @@
+{
+  "name": "3sd-inpaintegration",
+  "version": "1.0.0",
+  "description": "Persistent digital-double assets and pluggable reconstruction orchestration",
+  "type": "module",
+  "exports": "./src/index.js",
+  "bin": {
+    "digital-double": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/assets.js && node --check src/pipeline.js && node --check src/refinement.js && node --check src/texture.js && node --check src/cli.js"
+  },
+  "engines": { "node": ">=22" },
+  "keywords": [],
+  "author": "",
+  "license": "Apache-2.0",
+  "private": true
+}
