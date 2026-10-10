@@ -10,6 +10,7 @@ const offline = join(root, 'offline');
 const sha = content => createHash('sha256').update(content).digest('hex');
 const modelConfig = value => ({
   model_root: 'models',
+  comment: 'All paths are relative to repo root and must resolve beneath model_root.',
   detection: { person_detector: value },
   pose: { wholebody_fallback: value, wholebody_3d: value },
   segmentation: { sam2_checkpoint: value, birefnet_package: value },
@@ -64,6 +65,33 @@ async function seal(bundle) {
     Object.entries(bundle.records).map(([path, hash]) => `${hash}  ${path}\n`).join(''));
 }
 
+async function realWheel(path, name = 'demo') {
+  const generated = python(`import base64,csv,io,zipfile
+name=sys.argv[2]; prefix=name+"-1.0.dist-info/"
+files={name+".py":b"VALUE = 42\\n",
+prefix+"METADATA":("Metadata-Version: 2.1\\nName: "+name.replace("_","-")+"\\nVersion: 1.0\\n").encode(),
+prefix+"WHEEL":b"Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n"}
+rows=[[key,"sha256="+base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode(),str(len(data))] for key,data in files.items()]
+rows.append([prefix+"RECORD","",""]);record=io.StringIO();csv.writer(record,lineterminator="\\n").writerows(rows);files[prefix+"RECORD"]=record.getvalue().encode()
+with zipfile.ZipFile(sys.argv[1],"w") as archive:
+ for key,data in files.items():archive.writestr(key,data)`, [path, name]);
+  assert.equal(generated.status, 0, generated.stderr);
+  return readFile(path);
+}
+
+async function approveWheel(b, path, name = 'demo') {
+  for (const source of ['offline/wheel_rules.py', 'offline/manifests/wheel_rules.json']) {
+    await artifact(b, source, await readFile(join(root, source)));
+  }
+  const rules = JSON.parse(await readFile(join(root, 'offline/manifests/wheel_rules.json')));
+  const wheel = await readFile(join(b.directory, path));
+  await artifact(b, 'offline/review.json', '{}');
+  rules.rules = [{ name: name.replaceAll('_', '-'), version: '1.0', sha256: sha(wheel),
+    target: 'linux-cpu', python_version: '3.12', status: 'approved',
+    environment: rules.defaults['linux-cpu'], review: { path: 'offline/review.json', sha256: sha('{}') } }];
+  await artifact(b, 'offline/manifests/wheel_rules.json', JSON.stringify(rules));
+}
+
 test('offline policy requires exactly typed fail-closed fields', async t => {
   const b = await bundle(t);
   assert.equal(python('policy(Path(sys.argv[1]))', [b.directory]).status, 0);
@@ -115,8 +143,11 @@ test('trusted artifact records strictly parse and validate every artifact', asyn
 
 test('installer accepts only pinned hashed local wheels and rejects pip escape hatches', async t => {
   const b = await bundle(t);
-  const wheel = 'trusted-wheel-fixture';
-  await artifact(b, 'offline/wheelhouse/linux-cpu/demo-1.0-py3-none-any.whl', wheel);
+  await mkdir(join(b.directory, 'offline/wheelhouse/linux-cpu'), { recursive: true });
+  const wheelPath = 'offline/wheelhouse/linux-cpu/demo-1.0-py3-none-any.whl';
+  const wheel = await realWheel(join(b.directory, wheelPath));
+  b.records[wheelPath] = sha(wheel);
+  await approveWheel(b, wheelPath);
   const requirement = `demo==1.0 --hash=sha256:${sha(wheel)}\n`;
   await artifact(b, 'offline/requirements.linux-cpu.txt', requirement);
   await seal(b);
@@ -161,6 +192,7 @@ with zipfile.ZipFile(sys.argv[1], "w") as archive:
   assert.equal(generated.status, 0, generated.stderr);
   const wheel = await readFile(join(b.directory, wheelPath));
   b.records[wheelPath] = sha(wheel);
+  await approveWheel(b, wheelPath, 'offline_demo');
   await artifact(b, 'offline/requirements.linux-cpu.txt', `offline-demo==1.0 --hash=sha256:${sha(wheel)}\n`);
   await seal(b);
   const capability = python('run(lambda: isolated([[sys.executable, "-I", "-c", "pass"]], Path(sys.argv[1])))',
@@ -197,6 +229,23 @@ test('cold verification refuses blocked or missing assets and resolves model_roo
   }));
   await seal(b);
   assert.equal(python(check, [b.directory]).status, 0);
+  const complete = modelConfig('demo.bin');
+  for (const group of ['detection', 'pose', 'segmentation', 'face', 'llm', 'inpaint']) {
+    const missingGroup = { ...complete };
+    delete missingGroup[group];
+    await artifact(b, 'config/model_paths.json', JSON.stringify(missingGroup));
+    await seal(b);
+    assert.equal(python(check, [b.directory]).status, 2);
+    for (const key of Object.keys(complete[group])) {
+      const missingKey = { ...complete, [group]: { ...complete[group] } };
+      delete missingKey[group][key];
+      await artifact(b, 'config/model_paths.json', JSON.stringify(missingKey));
+      await seal(b);
+      assert.equal(python(check, [b.directory]).status, 2);
+    }
+  }
+  await artifact(b, 'config/model_paths.json', JSON.stringify(complete));
+  await seal(b);
   for (const change of [
     { ...asset, status: 'blocked', sha256: null, size_bytes: null, license: null },
     { ...asset, size_bytes: true }, { ...asset, destination: '../model.bin' },
@@ -295,19 +344,32 @@ test('audit contains only nonsensitive action target outcome', async t => {
   assert.equal((await stat(join(b.directory, 'offline/logs'))).mode & 0o777, 0o700);
 });
 
-test('unshare worker and commands receive sanitized environments before execution', () => {
+test('unshare worker and commands receive sanitized environments before execution', async t => {
+  const directory = await fixture(t);
   const result = python(`os.environ.update(LD_PRELOAD="/private/inject.so", PYTHONPATH="/private/code", HTTPS_PROXY="http://private", PRIVATE_TOKEN="secret")
 def capture(command, **kwargs):
+    assert "--pid" in command and "--fork" in command and "--mount-proc" in command
+    assert "--kill-child=SIGKILL" in command
     forbidden = {"LD_PRELOAD", "PYTHONPATH", "HTTPS_PROXY", "PRIVATE_TOKEN"}
     assert not forbidden.intersection(kwargs["env"])
     payload = json.loads(kwargs["input"])
     assert not forbidden.intersection(payload["env"])
     assert payload["env"]["HF_HUB_OFFLINE"] == "1"
+    for key in ("HOME", "TMPDIR", "XDG_CACHE_HOME"):
+        assert Path(payload["env"][key]).is_relative_to(Path(sys.argv[1]))
     return type("Result", (), {"returncode": 0})()
 subprocess.run = capture
 shutil.which = lambda *args, **kwargs: "/usr/bin/unshare"
-isolated([[sys.executable, "-I", "-c", "pass"]], Path.cwd())`);
+isolated([[sys.executable, "-I", "-c", "pass"]], Path(sys.argv[1]))`, [directory]);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('namespace worker refuses surviving sidecars without PID-1 isolation', () => {
+  const result = spawnSync('python3', ['-I', join(offline, 'common.py'), '_isolate'], {
+    encoding: 'utf8', input: JSON.stringify({ parent: 'unused', commands: [], cwd: root, env: {} })
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /PID namespace isolation was not created/);
 });
 
 test('audit refuses named pipes without hanging', async t => {
@@ -369,6 +431,12 @@ test('Git source configuration refuses hooks, filters and includes before invoki
 
 test('source checkout must match pinned clean commit before immutable vendor copy', async t => {
   const b = await bundle(t);
+  const capability = python('run(lambda: isolated([[sys.executable, "-I", "-c", "pass"]], Path(sys.argv[1])))', [b.directory]);
+  if (capability.status !== 0) {
+    assert.equal(capability.status, 2);
+    t.skip('Linux namespaces denied: isolated Git provenance checks cannot run on this host.');
+    return;
+  }
   const checkout = join(b.directory, 'offline/sources/demo');
   await mkdir(checkout, { recursive: true });
   const git = (...args) => execFileSync('git', ['-C', checkout, ...args], {
@@ -392,6 +460,21 @@ test('source checkout must match pinned clean commit before immutable vendor cop
   }));
   await seal(b);
   assert.equal(python(check, [b.directory]).status, 0, 'unselected blocked model metadata must not block source selection');
+  await rename(checkout, join(b.directory, 'offline/sources/stable-diffusion.cpp'));
+  b.records['offline/sources/stable-diffusion.cpp/main.py'] = b.records['offline/sources/demo/main.py'];
+  delete b.records['offline/sources/demo/main.py'];
+  await artifact(b, 'offline/manifests/sources.lock.json', JSON.stringify({
+    schema_version: 1, sources: [{ ...selected, id: 'stable-diffusion.cpp', repo: 'leejet/stable-diffusion.cpp' }]
+  }));
+  await seal(b);
+  const cpp = python('from build_offline import sources\nrun(lambda: sources(Path(sys.argv[1]), hashes(Path(sys.argv[1])), [], ["stable-diffusion.cpp"]))',
+    [b.directory]);
+  assert.equal(cpp.status, 0, cpp.stderr);
+  await rename(join(b.directory, 'offline/sources/stable-diffusion.cpp'), checkout);
+  b.records['offline/sources/demo/main.py'] = b.records['offline/sources/stable-diffusion.cpp/main.py'];
+  delete b.records['offline/sources/stable-diffusion.cpp/main.py'];
+  await artifact(b, 'offline/manifests/sources.lock.json', JSON.stringify({ schema_version: 1, sources: [selected] }));
+  await seal(b);
   await mkdir(join(b.directory, 'external'), { recursive: true });
   await rename(checkout, join(b.directory, 'external/demo'));
   b.records['external/demo/main.py'] = b.records['offline/sources/demo/main.py'];
@@ -434,8 +517,7 @@ test('build outputs produce deterministic unauthenticated wheel hash inventory a
   const check = 'from build_offline import output_inventory\nrun(lambda: output_inventory(Path(sys.argv[1]), "linux-cpu"))';
   assert.equal(python(check, [directory]).status, 2);
   await mkdir(join(directory, 'dist'));
-  const wheel = 'local output fixture';
-  await writeFile(join(directory, 'dist/demo-1.0-py3-none-any.whl'), wheel);
+  const wheel = await realWheel(join(directory, 'dist/demo-1.0-py3-none-any.whl'));
   const valid = python(check, [directory]);
   assert.equal(valid.status, 0, valid.stderr);
   assert.equal(await readFile(join(directory, 'artifacts.sha256'), 'utf8'),
@@ -447,6 +529,29 @@ test('build outputs produce deterministic unauthenticated wheel hash inventory a
   assert.equal(python(check, [directory]).status, 2);
 });
 
+test('build output inventory skips input symlinks but refuses produced symlinks', async t => {
+  const directory = await fixture(t);
+  const check = 'from build_offline import output_inventory\nrun(lambda: output_inventory(Path(sys.argv[1]), "linux-cpu"))';
+  for (const input of ['venv', 'wheels', 'sources']) {
+    await mkdir(join(directory, input, 'lib'), { recursive: true });
+    await symlink('lib', join(directory, input, 'lib64'));
+    await writeFile(join(directory, input, 'ignored.whl'), 'not an output wheel');
+  }
+  await mkdir(join(directory, 'dist'));
+  const wheel = await realWheel(join(directory, 'dist/demo-1.0-py3-none-any.whl'));
+  const valid = python(check, [directory]);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.equal(await readFile(join(directory, 'artifacts.sha256'), 'utf8'),
+    `${sha(wheel)}  dist/demo-1.0-py3-none-any.whl\n`);
+  for (const name of ['artifacts.sha256', 'sbom.json', 'wheel_rules.proposed.json']) {
+    await rm(join(directory, name));
+  }
+  await symlink('demo-1.0-py3-none-any.whl', join(directory, 'dist/output.whl'));
+  const invalid = python(check, [directory]);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /Build outputs must not contain symlinks/);
+});
+
 test('valid assets verify cold, but launcher refuses missing adapter and installer missing wheel recipe', async t => {
   const b = await readyBundle(t);
   const invoke = (name, ...extra) => spawnSync('python3', ['-B', join(offline, name), '--root', b.directory,
@@ -454,15 +559,19 @@ test('valid assets verify cold, but launcher refuses missing adapter and install
   const verified = invoke('verify_offline.py');
   assert.equal(verified.status, 0, verified.stderr);
   assert.match(verified.stdout, /execution\/isolation has not been asserted/);
+  await mkdir(join(b.directory, 'offline/wheelhouse/linux-cpu'), { recursive: true });
+  const wheelPath = 'offline/wheelhouse/linux-cpu/demo-1.0-py3-none-any.whl';
+  const wheel = await realWheel(join(b.directory, wheelPath));
+  b.records[wheelPath] = sha(wheel);
+  await approveWheel(b, wheelPath);
+  await artifact(b, 'offline/requirements.linux-cpu.txt', `demo==1.0 --hash=sha256:${sha(wheel)}\n`);
+  await seal(b);
   const launched = invoke('launch_offline.py');
   assert.equal(launched.status, 2);
   assert.match(launched.stderr, /No integration adapter/);
   const traversal = invoke('launch_offline.py', '--adapter', '../outside');
   assert.equal(traversal.status, 2);
   assert.match(traversal.stderr, /path traversal/);
-  const installed = invoke('install_offline.py');
-  assert.equal(installed.status, 2);
-  assert.match(installed.stderr, /required local file is missing/);
   await artifact(b, 'offline/runtime/adapter', 'untrusted');
   delete b.records['offline/runtime/adapter'];
   await seal(b);

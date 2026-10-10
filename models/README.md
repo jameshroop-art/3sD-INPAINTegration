@@ -55,8 +55,17 @@ these individually after extraction; offline verification must check those
 same local files, never attempt to hash a directory or compare it to the
 compressed archive hash.
 
-The current offline verifier accepts individually ready file records, not a
-ready archive record. Before deployment, a human creates a reviewed manifest
+The offline verifier accepts a ready archive record only when its complete
+reviewed `members`/`member_sha256` map and each local member's trusted artifact
+record are present; it verifies extracted files, never hashes a directory.
+`--deployment-manifest /absolute/new/deployment.json` writes a new local manifest
+after successful authenticated acquisition, expanding selected archives into
+individually ready member records. Output must have an existing parent outside
+the model root and cannot overwrite an existing file or follow symlinks.
+Each member carries its authenticated hash, measured size and parent provenance;
+unselected entries are retained. Review and authenticate the output before use.
+It does not install models, supply missing trusted hashes or authorize acquisition.
+Alternatively, before deployment a human creates a reviewed manifest
 using the **same** `schema_version: 1` / `models` schema: replace each verified
 archive entry with one file entry per allowlisted member. Preserve all unrelated
 entries. Each member entry has a unique ID (`archive-id:member-path`), the
@@ -71,7 +80,7 @@ Its ready file records describe already acquired local bytes only.
 Keep the exact original acquisition manifest and authenticated archive/member
 hash evidence locally. Authenticate the transformed manifest and each member's
 `models/destination` path in `offline/artifacts.sha256` before verification.
-No automatic transformation or end-to-end deployment is implemented. Changing
+No end-to-end deployment is implemented. Changing
 the manifest cannot make previously untrusted member hashes trustworthy.
 Do not derive “trusted” hashes from an arbitrary download or guessed conversation.
 Prepare a separate policy JSON with exactly these acquisition permissions:
@@ -129,6 +138,15 @@ All sidecar descendants must share verified isolation. Namespace controls
 prevent external packets/connections when verified; they do not forbid AF_INET
 socket creation or prove arbitrary malicious code harmless. Missing assets and
 unsupported enforcement must block rather than claim uninterrupted operation.
+Offline runtime, wheels and audit paths are `offline/runtime`,
+`offline/wheelhouse` and `offline/logs`. The reviewed per-wheel rules in
+`offline/manifests/wheel_rules.json` must bind each actual wheel's SHA-256,
+name, version, target and Python 3.12 profile before installation. Empty rules
+are blockers, never permission to infer trusted pins. “Localhost only” means
+local-machine file/process operations, **not loopback TCP permission**.
+Linux enforcement must verify no external DNS/TCP/HTTP(S)/IPv4/IPv6 access;
+Windows rules are declarative only and execution remains blocked until a reviewed
+backend exists. Acquisition setup neither installs wheels nor bypasses those rules.
 
 After authenticated acquisition, transfer via physical media and follow
 [offline installation](../docs/INSTALL.md). No working model stack, actual

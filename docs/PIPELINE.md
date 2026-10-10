@@ -26,6 +26,18 @@ See [INSTALL](INSTALL.md) for operational commands and conditional success
 criteria, [OFFLINE_SECURITY](OFFLINE_SECURITY.md) for enforcement limits, and
 [AGENT_IMPLEMENTATION](AGENT_IMPLEMENTATION.md) for implementation gates.
 
+| Status | Capabilities / evidence |
+| --- | --- |
+| Implemented | Immutable storage, nine-view/analysis validation, rig/confidence helpers, ordered adapters, acquisition/integrity and Linux wrapper checks. |
+| Tested | Existing Node and Python fixture tests, CLI refusal/help, hashes/paths/wheels/audit; owners report passing final suites with a real isolated-install smoke skip where namespaces are denied. Counts vary as tests are added. |
+| Adapter-only | Actual model inference, smooth reconstruction/baking, renderer, sd-cli/llama.cpp, XPBD/collision and feedback quality guards. |
+| Experimental | Proposed SI/row-major/OpenCV conventions, bounded expression mapping and bending-model specification until concrete adapter validation. |
+| Blocked | Untrusted/missing weights, unresolved licenses/provenance, missing recipes/adapters, unreviewed non-Linux isolation, and actual isolation on hosts that refuse namespaces. |
+
+Python 3.12 local construction, sidecar process topology and absence of external
+IP/TCP/DNS/HTTP(S) traffic require actual implementation/enforcement evidence;
+fixture or skipped smoke tests do not demonstrate an end-to-end cold start.
+
 ## 1. Capture and analysis
 
 On a `prepare(identity, views)` cache miss, supply all nine unique names:

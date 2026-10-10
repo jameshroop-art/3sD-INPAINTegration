@@ -6,15 +6,16 @@ import subprocess
 import sys
 from common import WHEELHOUSE_ROOT, audit, digest, environment, exact, fail, hashes, isolated, load, local, parser, policy, requirements, run, snapshot, target_host, trusted
 import json
+from wheel_rules import ENVIRONMENT, PROFILES, proposed_rule, require_python312
 
 
 def git(directory, *args):
     env = environment()
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null", GIT_NO_REPLACE_OBJECTS="1")
-    result = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
-                             "-c", "core.hooksPath=/dev/null", "-C", str(directory), *args],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
-    return result.stdout.strip()
+    result = isolated([["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                        "-c", "core.hooksPath=/dev/null", "-C", str(directory), *args]],
+                      directory, env, capture=True)
+    return result[0].strip()
 
 
 def source_config(directory):
@@ -79,7 +80,7 @@ def sources(root, records, overrides, source_ids=None):
         if identifier not in index:
             fail("A selected implementation ID is absent from the trusted source lock.")
         entry = index[identifier]
-        if not isinstance(entry["repo"], str) or not entry["repo"]:
+        if not isinstance(entry["repo"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", entry["repo"]):
             fail("Source repository metadata is missing.")
         if entry["repo"] in repos:
             fail("Duplicate source repositories are forbidden.")
@@ -113,6 +114,7 @@ def main():
     cli = parser(__doc__)
     cli.add_argument("--source", action="append", default=[], help="Locked REPO=local-relative-checkout")
     args = cli.parse_args()
+    require_python312()
     root = Path(args.root).absolute()
     obj = policy(root)
     target_host(args.target, isolation=True)
@@ -120,6 +122,7 @@ def main():
     trusted(root, records, "offline/policy.json")
     trusted(root, records, "offline/common.py")
     trusted(root, records, "offline/build_offline.py")
+    trusted(root, records, "offline/wheel_rules.py")
     recipe = load(trusted(root, records, "offline/recipes/" + args.target + ".json"))
     if not isinstance(recipe, dict) or not {"version", "target", "patches", "commands"} <= set(recipe) or not set(recipe) <= {"version", "target", "patches", "commands", "source_ids"}:
         fail("Invalid build recipe fields.")
@@ -193,16 +196,17 @@ def main():
 def output_inventory(stage, target):
     wheels = []
     for file in sorted(stage.rglob("*")):
-        if file.is_symlink():
-            fail("Build outputs must not contain symlinks.")
         relative = file.relative_to(stage)
         if relative.parts[0] in ("wheels", "venv", "sources"):
             continue
+        if file.is_symlink():
+            fail("Build outputs must not contain symlinks.")
         if file.is_file() and file.suffix == ".whl":
             wheels.append({"path": relative.as_posix(), "sha256": digest(file), "size_bytes": file.stat().st_size})
     if not wheels:
         fail("Recipe produced no local wheel outputs; target remains blocked.")
-    for name in ("artifacts.sha256", "sbom.json"):
+    proposals = [proposed_rule(stage / item["path"], target) for item in wheels]
+    for name in ("artifacts.sha256", "sbom.json", "wheel_rules.proposed.json"):
         if local(stage, name, exists=False).exists():
             fail("Build output inventory paths must not already exist.")
     with (stage / "artifacts.sha256").open("x", encoding="utf-8") as stream:
@@ -210,6 +214,10 @@ def output_inventory(stage, target):
     with (stage / "sbom.json").open("x", encoding="utf-8") as stream:
         stream.write(json.dumps({"version": 1, "target": target, "authenticated": False,
                                  "review_required": True, "wheels": wheels}, indent=2, sort_keys=True) + "\n")
+    with (stage / "wheel_rules.proposed.json").open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps({"schema_version": 1, "python_version": "3.12",
+                                 "defaults": {profile: ENVIRONMENT for profile in PROFILES},
+                                 "rules": proposals}, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

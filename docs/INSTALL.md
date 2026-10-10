@@ -9,6 +9,9 @@ No model download is required for documentation or fixture tests.
 
 - Development: Node.js **22+**; Python 3 with the standard library for operational
   scripts and their tests. The Node framework has no runtime dependencies.
+- Wheel construction and deployment require an authenticated **Python 3.12**
+  bootstrap and Python 3.12 virtual environments. Operational tooling itself
+  remains standard-library-only; no extra packages are needed merely to run it.
 - Offline execution: Linux x86-64, `unshare` with working user/network namespaces,
   local Python/venv/pip prerequisites, trusted storage and physically disconnected
   creation hardware. Prepare OS packages/toolchains on the acquisition machine.
@@ -16,6 +19,8 @@ No model download is required for documentation or fixture tests.
   before running these scripts; the interpreter and OS bootstrap are trusted
   prerequisites, not downloaded by the launcher. Do not run internet `apt`,
   `pip`, npm or other package acquisition on the creation machine.
+  Select Python 3.12 for acquisition setup/build/install and transfer the complete
+  trusted interpreter/venv/pip bootstrap without online builder downloads.
 - Target-native wheels, all transitive dependencies, native runtime libraries,
   GPU drivers/CUDA where applicable, reviewed source recipes and actual adapters
   are supplied by humans. They are not downloaded or inferred by offline tools.
@@ -83,6 +88,9 @@ models are non-commercial; InsightFace pretrained models also carry distinct
 non-commercial research restrictions. Optional SDXL/custom checkpoints/native
 wheels remain blocked without exact provenance and compatibility. Treat this
 as a candidate inventory, not a licensed installed stack.
+Verified Buffalo-L release URL/size metadata likewise does not authenticate
+the archive or extracted members: trusted archive/member hashes and license
+approval remain required and blocked until reviewed.
 
 Prepare a **separate absolute** acquisition policy outside the creation bundle:
 
@@ -108,8 +116,13 @@ bash scripts/setup_model_downloads.sh \
   --venv /absolute/local-acquisition-venv
 ```
 
-Setup only initializes safe acquisition directories and an empty no-pip venv;
-it does not acquire models, upgrade pip or establish asset readiness.
+Setup initializes only the model root and a new empty no-pip venv; it does not
+precreate archive destinations/member parents, acquire models, upgrade pip or
+establish asset readiness. An existing venv is refused. Duplicate identifiers,
+duplicate destinations and overlapping/nested destinations are rejected.
+Use the trusted Python 3.12 interpreter for this setup. Acquisition setup must
+sanitize its environment; a venv name alone does not establish interpreter
+version or safety.
 
 ```sh
 python3 scripts/fetch_models.py \
@@ -192,11 +205,20 @@ Physically transfer the reviewed repository/tooling, source checkouts, models,
 native prerequisites and target wheelhouse to disconnected hardware. Prepare
 these local files under the bundle root:
 
-Use reviewed USB/removable media and unpack with a reviewed local tool into a
-fresh bundle root, rejecting traversal/links/overwrites. There is no shipped
-complete USB packaging/unpack utility; do not invent an executable command or
-trust an archive merely because it arrived on physical media. Authenticate the
-transfer inventory out of band, then run Phase 5 verification before build/install.
+Use reviewed USB/removable media and a fresh destination. For a trusted,
+already-reviewed directory bundle, a standard local copy is sufficient:
+
+```sh
+cp -a /absolute/trusted-usb/offline-bundle /absolute/new-local-bundle
+python3.12 offline/verify_offline.py --root /absolute/new-local-bundle --target linux-cpu
+```
+
+The destination must not already exist. Authenticate the inventory out of band
+and inspect/reject links, special files and unsafe contents before copying;
+`cp -a` preserves them and is not a security validator. A reviewed user-controlled
+archive may instead be unpacked with a standard local tool after member/path/link
+review, with no overwrites or traversal. No custom USB pack/unpack helper ships,
+but standard trusted local tools exist. Physical media alone is not authenticity.
 
 | File / directory | Required contents |
 | --- | --- |
@@ -206,9 +228,10 @@ transfer inventory out of band, then run Phase 5 verification before build/insta
 | `models/` | Actual trusted local model files beneath the policy/config model root. |
 | `offline/manifests/sources.lock.json` | Shared reviewed `schema_version: 1` / `sources`: repo, exact commit, license, ready status. Null/unresolved revisions block build. |
 | `offline/sources/<repository-name>/` | Clean pinned local Git checkouts without unsupported submodules/symlinks. |
-| `wheelhouse/<target>/` | Only trusted regular `.whl` files for the selected host/ABI. |
+| `offline/wheelhouse/<target>/` | Only trusted regular `.whl` files for the selected host/ABI. |
 | `offline/build-requirements.<target>.txt` | All build dependencies pinned with hashes. |
 | `offline/requirements.<target>.txt` | All runtime dependencies pinned with hashes. |
+| `offline/manifests/wheel_rules.json` | Human-reviewed target defaults and per-wheel SHA/name/version/target/Python-3.12 environment profiles; empty/unresolved rules block installation. |
 | `offline/recipes/<target>.json` | Reviewed explicit build commands and deterministic ordered patches. Missing/empty recipe blocks. |
 | `offline/artifacts.sha256` | Independently authenticated inventory covering all required files, every operational `.py` tool, models/members, sources, wheels, policies, configs, recipes, patches and adapter/runtime dependencies. |
 
@@ -218,19 +241,16 @@ The examples above must match the actual bundle. Acquisition and offline verific
 `models/manifest.json`; do not assume the downloader assembles the complete
 operational bundle/config/requirements. Resolve destinations as
 Keep `config/model_paths.json` to the exact requested keys; document path-origin
-ambiguity externally rather than adding a `path_resolution` configuration key. Resolve destinations as
+ambiguity externally rather than adding configuration metadata fields. Resolve destinations as
 `bundle_root / model_root / destination`. For extracted directory assets,
 inventory and authenticate each actual local output file separately; an archive
 hash does not verify a directory, and directories themselves are not hashed.
-Current offline verification refuses archive-only ready entries: retain reviewed
-acquisition archive metadata separately and supply individually ready member
-records (`extraction: {"type": "none"}`) in the deployment inventory. Every file
-under a configured model-package directory must have its own ready record/hash.
-Both acquisition and deployment inventories use the same `schema_version`/
-`models` shape; deployment expands an acquired archive into its authenticated
-member records. A human must currently prepare/review that expansion: no
-`--deployment-manifest` option or automatic deployment-inventory export is
-advertised until it exists in the actual acquisition CLI.
+Offline verification uses the same archive entry and its reviewed
+`extraction.member_sha256` map: every allowed extracted member needs an
+authenticated artifact-inventory record and matching member hash. The exact
+allowlist, size limit and actual directory contents must match, with no links
+or unexpected files. No separate deployment-manifest conversion or CLI option
+is required. A directory is never hashed as the original archive.
 
 Each requirement line is exactly:
 
@@ -267,7 +287,7 @@ unsafe path or mismatch returns nonzero (normally `Blocked:` and exit 2).
 ## Phase 6 — Offline source build, then review outputs
 
 ```sh
-python3 offline/build_offline.py \
+python3.12 offline/build_offline.py \
   --root /absolute/offline-bundle --target linux-cpu
 ```
 
@@ -275,9 +295,32 @@ Optional `--source REPO=relative-local-checkout` is repeatable and must name an
 exact repository in the trusted lock. Build requires clean pinned sources,
 hashed source files, reviewed recipe/patches, nonempty build requirements and
 the matching wheelhouse. Current recipe entrypoints are staged
+Without an override, use the reviewed `offline/sources/<source-id>`
+checkout when present, otherwise its reviewed `external/<source-id>`
+checkout. Both paths still require pinned clean contents and trusted hashes;
+fallback is local only, never a clone/download during build. Current recipe entrypoints are staged
+Only selected implementation IDs are build prerequisites. Default selection is
+`sam2`, `sapiens`, `stable-diffusion.cpp`, `llama.cpp`; optional recipe
+`source_ids` selects a unique reviewed subset. Unselected blocked model-only
+metadata does not force every lock entry ready; each selected blocked or null
+source still refuses. Current recipe entrypoints are staged
 `venv/bin/python`, with explicit argument arrays; this is not a generic
 CMake/CUDA/Metal build driver. Stage suitable reviewed build orchestration
 through that contract, or leave an unsupported native build blocked.
+Recipes may explicitly select `source_ids`; use actual IDs such as
+`sam2`, `sapiens`, `stable-diffusion.cpp` and `llama.cpp`. Selection does not
+approve blocked licenses or resolve null revisions. A reviewed smaller source
+set must still provide the actual implementations needed by its chosen target.
+
+The required construction sequence is: acquire exact resources on the separate
+connected machine → human-comb/review code and licenses → apply reviewed
+deterministic offline patches → create isolated **Python 3.12** build venv →
+build compatible `cp312` wheels (or compatible pure-Python wheels) → record hashes
+and SBOM → human-review/authenticate outputs → offline installation. Review
+runtime imports, lazy loaders, native hooks, update/telemetry paths and sidecars
+for DNS/TCP/HTTP/HTTPS and external IPv4/IPv6 access. No online resource download
+is allowed during build. Missing reviewed patches/resources/ABI compatibility
+block the target, not trigger fetching or silent fallback.
 
 Expected only with complete inputs and working isolation: local build completes
 in `offline/staging-build-<target>`. Existing staging is refused; do not reuse
@@ -289,6 +332,10 @@ The recipe must emit wheel outputs outside staged input `wheels/`, `venv/` and
 deterministic staged `artifacts.sha256` and `sbom.json` for those outputs, with
 `authenticated: false` and `review_required: true`. These generated inventories
 are review aids, not automatic supply-chain authentication.
+It also emits `wheel_rules.proposed.json`; proposed profiles are not approved
+installation rules. Human review must supply authenticated per-wheel rules in
+`offline/manifests/wheel_rules.json`, whose shipped `rules` array is empty and
+therefore blocks real installation.
 
 ## Phase 7 — Offline wheel installation
 
@@ -298,10 +345,32 @@ python3 offline/install_offline.py \
 ```
 
 Expected only after verification and with target runtime requirements/wheels:
-immutable local runtime venv `runtime/venv-linux-cpu` is created under
+immutable local runtime venv `offline/runtime/venv-linux-cpu` is created under
 namespace isolation, with no-index/require-hashes/wheel-only/no-deps pip.
 The isolated build/install sequence also runs `pip check` to detect omitted or
 incompatible transitive dependencies; `--no-deps` is not permission to omit them.
+Install only with trusted Python 3.12 and matching `cp312`/compatible pure wheels;
+native platform tags, libraries and drivers must match the actual target.
+Review/validate an environment rule for every wheel in
+`offline/manifests/wheel_rules.json` before installation. “Localhost Only” means
+Each approved rule includes `status: "approved"` and hashed local `review`
+evidence (`path` and `sha256`); blocked proposals cannot claim review approval. “Localhost Only” means
+The cold gate also validates every wheel's actual ZIP metadata and compatibility
+tags, including manylinux/glibc compatibility; a filename or profile alone is
+not proof of a valid compatible wheel. Build outputs undergo the same check
+before proposed rules/hash/SBOM generation. “Localhost Only” means
+Compatible profiles include supported `cp312` native wheels, compatible `abi3`
+wheels and `py3`/`py312` `none-any` pure wheels; native files inside an `any`
+wheel are rejected. Linux native tags must match x86-64 and host glibc. “Localhost Only” means
+Every wheelhouse file requires approval, including unselected wheels and build
+dependencies. Remove unreviewed extras or review them; selection cannot bypass
+the gate. Launch also verifies the copied local venv interpreter's hash and
+Python 3.12 version inside isolation. “Localhost Only” means
+local-machine file/process operations, **not loopback TCP permission**: no DNS,
+TCP, HTTP(S), IPv4/IPv6 or outside-sidecar access. Do not fabricate wheel hashes
+or profiles to pass this gate. Linux execution needs the reviewed enforcement
+backend; Windows profiles are declarative and execution remains refused until
+its actual isolation backend is reviewed/implemented.
 An existing venv is refused. Failed staging is retained for explicit local
 diagnosis; remove incomplete staging/venv only after reviewing it and confirming
 no process uses it. Successful installation is not model or adapter acceptance.
@@ -312,7 +381,7 @@ do not mistake a successful empty acquisition venv for model readiness.
 
 ## Phase 8 — Launch reviewed integration and create locally
 
-Prepare an executable adapter under the local `runtime/` directory and authenticate
+Prepare an executable adapter under the local `offline/runtime/` directory and authenticate
 its hash plus dependencies. Configure local capture/input/output paths in the
 reviewed adapter/config; `launch_offline.py` does not accept arbitrary trailing
 model commands or implement an API plugin loader.

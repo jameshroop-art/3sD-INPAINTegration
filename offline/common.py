@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 
@@ -158,9 +159,9 @@ def assets(root, records, obj):
         fail("No model integration assets have been staged.")
     config_path = trusted(root, records, "config/model_paths.json")
     config = load(config_path)
-    if not isinstance(config, dict) or config.get("model_root") != "models":
+    if not isinstance(config, dict) or config.get("model_root") != obj["model_root"]:
         fail("Config requires model_root=models and explicit local model mappings.")
-    if not set(MODEL_KEYS) <= set(config) or not set(config) <= set(MODEL_KEYS) | {"model_root", "comment", "path_resolution"}:
+    if set(config) != set(MODEL_KEYS) | {"model_root", "comment"}:
         fail("Model config must contain all required detection, pose, segmentation, face, llm and inpaint groups.")
     for group, keys in MODEL_KEYS.items():
         exact(config[group], keys, "model config " + group)
@@ -248,7 +249,7 @@ def assets(root, records, obj):
         ready_paths.add(filename)
     count = 0
     for group, mappings in config.items():
-        if group in ("model_root", "comment", "path_resolution"):
+        if group in ("model_root", "comment"):
             if not isinstance(mappings, str):
                 fail("Invalid model config metadata.")
             continue
@@ -274,6 +275,10 @@ def assets(root, records, obj):
 
 
 def requirements(root, records, target, obj, build=False):
+    from wheel_rules import RULES_PATH, load_wheel_rules, validate_wheel
+    trusted(root, records, "offline/wheel_rules.py")
+    trusted(root, records, RULES_PATH)
+    rules = load_wheel_rules(root, records[RULES_PATH], target)
     prefix = "build-requirements" if build else "requirements"
     filename = "offline/" + prefix + "." + target + ".txt"
     text = trusted(root, records, filename).read_text(encoding="utf-8")
@@ -285,6 +290,7 @@ def requirements(root, records, target, obj, build=False):
         if wheel.is_symlink() or not wheel.is_file() or not wheel.name.endswith(".whl"):
             fail("The wheelhouse must contain regular local wheels only.")
         trusted(root, records, wheel.relative_to(root).as_posix())
+        validate_wheel(wheel, target, rules)
         wheel_files.setdefault(digest(wheel), []).append(wheel)
     selected = []
     names = set()
@@ -346,11 +352,26 @@ def environment():
 
 
 def isolation_probe(parent_namespace):
+    import fcntl
     if os.readlink("/proc/self/ns/net") == parent_namespace:
         fail("Network namespace was not created.")
     interfaces = [line.split(":")[0].strip() for line in Path("/proc/net/dev").read_text().splitlines()[2:]]
     if interfaces != ["lo"]:
         fail("Isolation namespace must expose only loopback.")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as inspection:
+        for interface in interfaces:
+            request = struct.pack("256s", interface.encode("ascii")[:15])
+            response = fcntl.ioctl(inspection.fileno(), 0x8913, request)
+            flags = struct.unpack_from("H", response, 16)[0]
+            if flags & 1:
+                fail("Isolation requires every interface, including loopback, administratively down.")
+    for filename in ("tcp", "tcp6", "udp", "udp6"):
+        if len(Path("/proc/net", filename).read_text().splitlines()) != 1:
+            fail("Isolation namespace must have no pre-existing TCP/UDP sockets or listeners.")
+    if len(Path("/proc/net/route").read_text().splitlines()) != 1:
+        fail("Isolation namespace must not contain IPv4 routes.")
+    if any(line.strip() for line in Path("/proc/net/ipv6_route").read_text().splitlines()):
+        fail("Isolation namespace must not contain IPv6 routes.")
     for family, address in ((socket.AF_INET, ("1.1.1.1", 443)), (socket.AF_INET6, ("2606:4700:4700::1111", 443))):
         with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(1)
@@ -361,6 +382,16 @@ def isolation_probe(parent_namespace):
                     fail("External connection blocking could not be verified.")
             else:
                 fail("External connectivity detected.")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns:
+        dns.settimeout(1)
+        query = bytes.fromhex("123401000001000000000000") + b"\x07example\x03com\x00\x00\x01\x00\x01"
+        try:
+            dns.sendto(query, ("1.1.1.1", 53))
+        except OSError as error:
+            if error.errno not in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+                fail("UDP DNS packet blocking could not be verified.")
+        else:
+            fail("UDP DNS packet transmission is available; execution is blocked.")
     try:
         socket.getaddrinfo("example.com", 443)
     except socket.gaierror:
@@ -369,20 +400,41 @@ def isolation_probe(parent_namespace):
         fail("External DNS resolution is available; execution is blocked.")
 
 
-def isolated(commands, cwd, env=None):
+def isolated(commands, cwd, env=None, capture=False):
     if platform.system() != "Linux" or not Path("/proc/self/ns/net").exists():
         fail("No verified isolation backend is implemented for this platform.")
     unshare = shutil.which("unshare", path="/usr/bin:/bin")
     if not unshare:
         fail("Install unshare and enable network namespaces before offline execution.")
-    payload = {"commands": commands, "cwd": str(cwd), "env": env or environment(),
+    clean = environment()
+    allowed = {"HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "INPAINTEGRATION_MODEL_ROOT",
+               "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_NO_REPLACE_OBJECTS", "GIT_CEILING_DIRECTORIES"}
+    if env is not None:
+        if not isinstance(env, dict) or any(key not in clean and key not in allowed for key in env):
+            fail("Execution environment contains unapproved variables.")
+        for key, value in env.items():
+            if not isinstance(value, str) or "\x00" in value or (key in clean and value != clean[key]):
+                fail("Execution environment cannot override sanitized offline settings.")
+            clean[key] = value
+    for name, variables in (("cache", ("XDG_CACHE_HOME",)), ("scratch", ("TMPDIR", "TMP", "TEMP")), ("home", ("HOME",))):
+        directory = local(cwd, name, exists=False)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if not directory.is_dir():
+            fail("Approved local runtime working paths must be directories.")
+        os.chmod(directory, 0o700)
+        for variable in variables:
+            clean[variable] = str(directory)
+    payload = {"commands": commands, "cwd": str(cwd), "env": clean, "capture": capture,
                "parent": os.readlink("/proc/self/ns/net")}
-    command = [unshare, "--user", "--map-root-user", "--net", "--", sys.executable,
+    command = [unshare, "--user", "--map-root-user", "--net", "--pid", "--fork",
+               "--kill-child=SIGKILL", "--mount", "--mount-proc", "--", sys.executable,
                "-I", str(Path(__file__).resolve()), "_isolate"]
     result = subprocess.run(command, input=json.dumps(payload), text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, env=environment())
     if result.returncode:
         fail("Isolated execution failed. Enable Linux user/network namespaces, or fix the verified local recipe; no online fallback is permitted.")
+    if capture:
+        return json.loads(result.stdout)
 
 
 def audit(root, obj, action, target, outcome):
@@ -422,8 +474,16 @@ if __name__ == "__main__":
         if sys.argv[1:] != ["_isolate"]:
             fail("This module is internal.")
         payload = json.load(sys.stdin)
+        if os.getpid() != 1:
+            fail("PID namespace isolation was not created; surviving sidecars are forbidden.")
         isolation_probe(payload["parent"])
+        output = []
         for command in payload["commands"]:
-            subprocess.run(command, cwd=payload["cwd"], env=payload["env"], check=True,
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            result = subprocess.run(command, cwd=payload["cwd"], env=payload["env"], check=True,
+                                    text=True, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if payload.get("capture"):
+                output.append(result.stdout)
+        if payload.get("capture"):
+            print(json.dumps(output))
     run(worker)

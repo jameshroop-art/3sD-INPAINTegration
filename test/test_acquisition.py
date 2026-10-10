@@ -2,8 +2,10 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tarfile
 import unittest
@@ -189,6 +191,29 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fetch.extract(archive, target, spec)
 
+    def test_deployment_manifest_expands_trusted_archive(self):
+        archive, _ = self.zip_case("wanted")
+        payload = archive.read_bytes()
+        (self.local / "fixture").write_bytes(payload)
+        entry = self.entry | {"destination": "package", "extraction": archive_spec(),
+                              "sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
+        output = self.root / "deployment.json"
+        self.assertEqual(self.run_fetch(entry=entry, extra=["--deployment-manifest", str(output)]), 0)
+        record = json.loads(output.read_text())["models"][0]
+        self.assertEqual(record["destination"], "package/wanted")
+        self.assertEqual(record["sha256"], MEMBER_HASH)
+        self.assertEqual(record["size_bytes"], 1)
+        self.assertEqual(record["parent_sha256"], entry["sha256"])
+        self.assertEqual(record["extraction"], {"type": "none"})
+        self.assertIsNone(record["source_url"])
+
+    def test_deployment_output_refuses_overwrite_and_model_root(self):
+        output = self.root / "existing.json"
+        output.write_text("retain")
+        self.assertEqual(self.run_fetch(extra=["--deployment-manifest", str(output)]), 2)
+        self.assertEqual(output.read_text(), "retain")
+        self.assertEqual(self.run_fetch(extra=["--deployment-manifest", str(self.root / "models/output.json")]), 2)
+
     def test_download_retry_and_https_guard_with_synthetic_response(self):
         class Response(io.BytesIO):
             pass
@@ -213,6 +238,31 @@ class AcquisitionTests(unittest.TestCase):
         with patch("subprocess.run", side_effect=AssertionError("No Git or pip allowed")):
             self.assertEqual(clone_external_repos.main(["--lock", str(lock), "--source", "fixture",
                                                        "--policy", str(self.policy), "--acquisition-only", "--connected-machine"]), 2)
+
+    def run_clone_wrapper(self, args):
+        stub = self.root / "python3"
+        stub.write_text('#!/bin/bash\nprintf "%s\\0" "$@"\n')
+        stub.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(fetch.ROOT / "scripts/clone_model_implementations.sh"), *args],
+            env={**os.environ, "PATH": str(self.root) + os.pathsep + os.environ.get("PATH", "")},
+            capture_output=True, check=True)
+        return result.stdout.decode().split("\0")[:-1]
+
+    def test_clone_wrapper_defaults_preserve_arguments(self):
+        args = ["--policy", str(self.root / "policy with spaces.json"), "--connected-machine"]
+        self.assertEqual(self.run_clone_wrapper(args),
+                         [str(fetch.ROOT / "scripts/clone_external_repos.py"),
+                          "--source", "sam2", "--source", "sapiens",
+                          "--source", "stable-diffusion.cpp", "--source", "llama.cpp", *args])
+
+    def test_clone_wrapper_explicit_sources_replace_defaults(self):
+        for selection in (["--source", "sam2"], ["--source=sam2"],
+                          ["--source", "sam2", "--source=llama.cpp"]):
+            with self.subTest(selection=selection):
+                args = ["--policy", str(self.root / "policy with spaces.json"), *selection]
+                self.assertEqual(self.run_clone_wrapper(args),
+                                 [str(fetch.ROOT / "scripts/clone_external_repos.py"), *args])
 
 
 if __name__ == "__main__":

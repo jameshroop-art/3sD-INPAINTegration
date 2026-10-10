@@ -4,10 +4,12 @@ import shutil
 import sys
 from common import RUNTIME_ROOT, WHEELHOUSE_ROOT, audit, fail, isolated, local, parser, requirements, run, snapshot, target_host, trusted
 from verify_offline import verify
+from wheel_rules import require_python312
 
 
 def main():
     args = parser(__doc__).parse_args()
+    require_python312()
     root = Path(args.root).absolute()
     obj, records = verify(root, args.target)
     target_host(args.target, isolation=True)

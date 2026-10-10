@@ -71,14 +71,18 @@ bash scripts/setup_model_downloads.sh \
   --venv /absolute/local-acquisition-venv
 ```
 
-**Outputs:** exact approved local source checkouts, safe acquisition directories
+**Outputs:** exact approved local source checkouts, model-root directory only
 and empty no-pip venv, not installed models/adapters. **Failures:** null/unresolved
 pins, blocked licenses, wrong policy, unsafe paths or existing destinations
-block; never choose automatic “latest.” **Tests:** acquisition fixture tests
+block; duplicate/overlapping destinations and an existing venv also block.
+Never choose automatic “latest.” **Tests:** acquisition fixture tests
 and wrapper syntax. **Security/license:** explicit acquisition-only flags,
 separate absolute policy (`offline_required:false`, `acquisition_only:true`);
 never mutate creation policy. Record source/license/SBOM provenance. An SBOM
 does not establish rights or vulnerability freedom.
+Use authenticated Python 3.12 for the acquisition venv and sanitize setup's
+environment. Version mismatch or unsafe bootstrap blocks setup; do not install
+dependencies merely to run the standard-library acquisition tools.
 
 ### Ordered model downloads
 
@@ -113,22 +117,36 @@ checkpoint/training-data/quantization rights.
 
 **Inputs:** reviewed native sources/build dependencies, target-compatible wheels,
 all transitive runtime requirements, model member hashes and USB transfer media.
+Require trusted Python 3.12 bootstrap acquired separately, and `cp312` or
+compatible pure-Python wheel ABI. Human-comb/review acquired code and licenses,
+Require reviewed `offline/manifests/wheel_rules.json` target defaults and each
+wheel's SHA/name/version/target/Python-3.12 profile. Empty rules and unknown pins
+remain blocked. Localhost-only profiles permit local files/processes, not TCP
+loopback; forbid DNS/TCP/HTTP(S)/IPv4/IPv6/outside sidecars and unsafe inherited
+environment. Linux/Microsoft profile declarations do not implement Windows
+isolation; unsupported execution refuses. Human-comb/review acquired code and licenses,
+patch all network/lazy-download/update/telemetry paths, then create an isolated
+Python 3.12 build venv from local resources only. No online builder download.
 **Commands:** inspect existing interfaces before assembling the local bundle:
 
 ```sh
 python3 offline/build_offline.py --help
 python3 offline/install_offline.py --help
+python3.12 offline/build_offline.py --root /absolute/offline-bundle --target linux-cpu
 ```
 
-The repository has no complete wheel acquisition/package/unpack implementation.
+The build command executes only after the trusted local sources, hashed patches,
+target recipe and build wheels are staged; it creates the isolated Python 3.12
+build venv and refuses missing inputs without online acquisition.
+The repository has no complete wheel acquisition/package utility.
 Human deployment tooling must assemble and physically transfer the reviewed
 bundle using [INSTALL Phase 4](INSTALL.md#phase-4--assemble-and-authenticate-the-transfer-bundle).
 Do not invent a working package command or hash pin.
 **Outputs:** authenticated `offline/artifacts.sha256`, shared
-`models/manifest.json`, `config/model_paths.json`, individually ready extracted
-member records, source lock, target recipe, build/runtime requirements and
-`wheelhouse/<target>`. **Failures:** absent/empty requirements, ABI mismatch,
-archive-only ready assets, unknown hashes or unsigned/unreviewed provenance
+`models/manifest.json`, `config/model_paths.json`, individually hashed extracted
+members in the shared archive map, source lock, target recipe, build/runtime requirements and
+`offline/wheelhouse/<target>`. **Failures:** absent/empty requirements, ABI mismatch,
+archive entries without complete trusted member maps, unknown hashes or unsigned/unreviewed provenance
 block. **Tests:** hash inventory parsing, wheel pin matching, path/symlink and
 omitted-dependency regressions. **Security/license:** audit every dependency and
 native component; authenticate the inventory out of band rather than trust
@@ -136,6 +154,16 @@ hashes generated from arbitrary downloads. Keep subject data off transfer PRs.
 Recipes must emit actual wheels outside staged inputs/venv/source trees.
 Generated output `artifacts.sha256`/`sbom.json` are explicitly unauthenticated
 review aids; no wheels or unreviewed outputs cannot advance to installation.
+Recipe `source_ids` uses real IDs including dotted `.cpp` names; honor blocked
+licenses/pins for selected sources. Generated `wheel_rules.proposed.json` is
+review-only, not a substitute for authenticated per-wheel installation rules.
+Review DNS/TCP/HTTP/HTTPS, IPv4/IPv6 and outside-sidecar access in Python/native
+code; sidecars and every descendant must share isolation, never delegate to an
+external host daemon. Missing actual enforcement remains blocked, not promised.
+Current Linux worker checks PID 1, down loopback/no routes or listeners and
+packet/DNS refusal, with PID-namespace descendant teardown. This is not seccomp
+or a hostile-code/filesystem sandbox; validate the actual backend on deployment
+hardware and report namespace refusal honestly.
 
 ## Phase 4 — Policy enforcement
 
@@ -244,7 +272,7 @@ isolation environment. **Commands:**
 npm run check
 npm test
 python3 -m unittest discover -s test -p 'test_*.py'
-bash -n scripts/*.sh
+for script in scripts/*.sh; do bash -n "$script" || exit; done
 ```
 
 **Outputs:** measured test results separated from actual model/deployment evidence.
@@ -266,7 +294,7 @@ if available. **Commands:**
 npm run check
 npm test
 python3 -m unittest discover -s test -p 'test_*.py'
-bash -n scripts/*.sh
+for script in scripts/*.sh; do bash -n "$script" || exit; done
 ```
 
 Validate every local doc link and actual CLI `--help` after interface coordination.

@@ -37,6 +37,9 @@ and `logs` is `"local_only"`. The local roots are `model_root: "models"`,
 The policy expresses requirements; JSON alone does not enforce them. Even a
 comment saying “Enforced by launcher” is not a guarantee without the reviewed
 launcher/worker actually executing its checks.
+The retained original comment about temporarily disabling acquisition is not
+permission to weaken this creation policy: the loader rejects changed required
+values. Use the separate acquisition-only policy on the connected machine.
 
 Explicit acquisition requires `--acquisition-only --connected-machine
 --policy /absolute/separate/acquisition-policy.json`; that separately reviewed
@@ -66,13 +69,18 @@ unknown SHA-256, absent local files, unreviewed licenses, absent local config
 mappings or mismatched sizes block verification. Resolve model destinations
 beneath the configured model root and authenticate every extracted archive
 member individually; never hash a directory as if it were the acquired archive.
-Current offline verification blocks archive-only ready records and requires
-individual ready member records with no extraction; configured directories must
-contain only files covered by those records and authenticated artifact hashes.
+Offline verification accepts the shared reviewed archive entry only with its
+complete member allowlist/hash map, size limit and individually authenticated
+artifact records. Missing/unexpected files, links or mismatched member hashes
+block. No separate deployment inventory conversion is required.
 Source builds additionally
 require a ready lock entry with an approved 40-hex commit and license, a clean
 local checkout, no unsupported submodules/symlinks, and hashed source files.
 Unresolved `null` source revisions must remain blocked until provenance review.
+Build-time Git provenance subprocesses also run inside the same reviewed
+user/network/PID/proc isolation boundary, not as unrestricted host commands.
+Supplied execution environments reject unknown entries, secrets and unsafe
+overrides before execution.
 
 Acquisition validates expected hash/size **before** transferring an asset,
 checks bytes afterward, and stages before publication. Reviewed extraction
@@ -80,8 +88,8 @@ allowlists and size limits reject traversal, links, special files, duplicate or
 unexpected archive members.
 Archive acquisition also requires `extraction.member_sha256` with exactly the
 allowlisted member keys and trusted hashes before transfer; each extracted
-member is checked against it. Deployment still requires individually ready
-member records rather than an archive-only ready entry.
+member is checked against it. Offline verification uses the same reviewed map
+and authenticates each actual extracted file, never a directory digest.
 HTTPS and bounded retries do not establish a model
 license or make a checkpoint safe to execute; hashes must come from a trusted
 authority, not an invented prior conversation.
@@ -98,6 +106,19 @@ Python ABI, native libraries and GPU drivers remain the deployment team's
 responsibility.
 The isolated installer/build also runs `pip check`; omitted or incompatible
 transitive dependencies cause failure rather than being fetched or ignored.
+Each wheel additionally needs a human-reviewed environment rule in
+`offline/manifests/wheel_rules.json`, matching SHA/name/version/target and
+Python 3.12. Empty/unresolved profiles fail closed; target defaults are not
+substitutes for individual review. “Localhost Only” is local-machine file/process
+access, not authorization for loopback TCP/IP. Linux and Microsoft profiles must
+forbid DNS/TCP/HTTP(S)/IPv4/IPv6, outside sidecars and unsafe inherited environment.
+Windows profile metadata alone cannot enforce isolation: its execution remains
+blocked until a reviewed backend exists. Acquisition never installs wheels
+outside the verified offline installer.
+Wheel validation reads ZIP metadata/tags without importing package contents and
+checks host ABI/libc compatibility. Build/install/launch require CPython 3.12;
+launcher bootstrap/version and executable hashes must be verified in isolation,
+not inferred from an arbitrary adapter name or venv directory.
 
 Builds snapshot trusted inputs into local staging and apply reviewed deterministic
 patches before explicit recipe argument arrays. Missing recipes/requirements are
@@ -106,9 +127,14 @@ stack. Build output is not automatically trusted: review, hash and transfer it
 through the same supply-chain gate before installation.
 
 Build, install and launch execute under a Linux user/network namespace
-(`unshare --user --map-root-user --net`). The internal worker verifies its
-network namespace differs from the parent's, that only loopback exists, external
-IPv4/IPv6 connections are unreachable and external DNS resolution fails.
+with PID lifetime isolation and a private proc mount:
+`unshare --user --map-root-user --net --pid --fork --kill-child=SIGKILL
+--mount --mount-proc`. The internal worker verifies it is PID 1, its network
+namespace differs from the parent's, and only administratively-down loopback
+exists. It checks no TCP/UDP IPv4/IPv6 sockets/listeners or routes, unreachable
+external TCP connections, blocked UDP DNS transmission and failed external DNS
+resolution. PID-namespace teardown kills ordinary descendants so normal sidecars
+cannot survive worker completion.
 Failure of namespace creation, probes or child commands blocks execution;
 there is no online or “best effort” fallback. Disabled user namespaces on CI/
 managed hosts are an expected blocker, not permission to weaken the policy.
@@ -120,11 +146,19 @@ The worker passes a restricted environment and offline/telemetry flags
 `HF_HUB_DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `WANDB_DISABLED`, `WANDB_MODE`,
 `PIP_NO_INDEX`, `PIP_DISABLE_PIP_VERSION_CHECK`). Launch maps model caches to
 the local model directory and runs only an explicitly selected, hash-verified,
-executable adapter relative to the script's fixed `runtime/` root; it does not accept a shell
+executable adapter relative to the script's fixed `offline/runtime/` root; it does not accept a shell
 command. Environment flags are defense in depth, not the network security
 boundary.
 The `unshare` subprocess itself also receives the sanitized environment;
 inherited `LD_PRELOAD`, `PYTHONPATH`, proxies and secrets are not passed through.
+Execution creates private mode-0700 local home/cache/scratch directories beneath
+its working directory and maps `HOME`, `TMPDIR`, `TMP`, `TEMP` and
+`XDG_CACHE_HOME` there. These locations remain local and must not appear in
+public diagnostics; inherited home/cache/temporary paths are not trusted.
+Acquisition setup and isolated construction require trusted Python 3.12 with a
+sanitized environment; review/patch acquired resources before a local-only
+Python 3.12 build venv produces `cp312`/compatible pure wheels. These are enforced
+implementation/deployment invariants, not additional policy JSON keys.
 
 Compatible-host verification may inspect metadata on macOS M1 or Windows;
 build/install/launch refuse those platforms because no reviewed isolation
@@ -133,8 +167,9 @@ Cross-building and a full platform implementation are not claimed.
 
 ## Residual risks and diagnostics
 
-A network namespace isolates only the launched processes' network stack; it is
-**not** a complete hostile-code sandbox. Filesystem access, inherited descriptors
+A network namespace isolates the launched processes' network stack and the PID
+namespace controls descendant lifetime; these are **not** a complete hostile-code
+sandbox. The proc mount does not provide general filesystem isolation. Filesystem access, inherited descriptors
 or OS capabilities, local Unix sockets/IPC, privileged helpers, kernel
 vulnerabilities and native/GPU code need separate review. Malicious native
 installation hooks could use an inherited communication descriptor or, when
@@ -143,6 +178,15 @@ not isolate the filesystem or authenticate the running interpreter/kernel.
 Only trusted, reviewed wheels, sources and adapters belong inside this boundary;
 do not use a machine with untrusted privileged services. Physical disconnection
 and reviewed process/container/VM isolation remain necessary deployment controls.
+Namespace isolation does not prohibit creating an `AF_INET`/`AF_INET6` socket;
+the requirement is no external DNS resolution, packets or connections over
+IPv4/IPv6, TCP, HTTP or HTTPS. Sidecars and all descendants must remain in the
+same isolation boundary with no external daemon handling their work. Review and
+test this actual process topology; unsupported enforcement is blocked. Neither
+policy nor namespace probes promise safety against malicious privileged code,
+continuous service or freedom from missing-asset failures.
+No seccomp prohibition on socket creation is implemented; namespace/route/interface
+checks constrain packet/connectivity channels, not the `socket()` syscall.
 
 `verify_offline.py` hashes local files and checks metadata only; it does not
 assert execution isolation, load models, install packages, validate CUDA or
@@ -157,6 +201,8 @@ not personal inputs. They are not signed, tamper-proof or a comprehensive
 forensic log; early failures may precede an audit record.
 The audit file is restricted to mode 0600 and its parent directory to 0700;
 permissions reduce local exposure but do not authenticate log contents.
+The local audit location is `offline/logs/audit.jsonl`; runtime and wheels stay
+under `offline/runtime/` and `offline/wheelhouse/`, not arbitrary device paths.
 Child stdout/stderr
 are captured rather than automatically uploaded; sanitized stage-specific
 diagnostics should be collected locally by reviewed adapters.

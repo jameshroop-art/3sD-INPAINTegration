@@ -96,6 +96,47 @@ def validate_destinations(entries):
                 raise ValueError("Nested model destinations may overwrite trusted assets")
 
 
+def deployment_records(entry, destination):
+    spec = entry["extraction"]
+    if spec["type"] == "none":
+        return [entry]
+    records = []
+    for member in spec["members"]:
+        file = safe_target(destination, member)
+        expected = spec["member_sha256"][member]
+        if not file.is_file() or digest(file) != expected:
+            raise ValueError("Deployment member integrity mismatch")
+        records.append({
+            "id": entry["id"] + ":" + member, "group": entry["group"],
+            "source_url": None, "destination": entry["destination"] + "/" + member,
+            "extraction": {"type": "none"}, "license": entry["license"],
+            "required": entry["required"], "status": "ready",
+            "sha256": expected, "size_bytes": file.stat().st_size,
+            "parent_id": entry["id"], "parent_sha256": entry["sha256"],
+            "parent_source_url": entry["source_url"],
+            "acquisition": "deployment-only"
+        })
+    return records
+
+
+def write_deployment(path, manifest, replacements):
+    records = []
+    for entry in manifest["models"]:
+        records.extend(replacements.get(entry["id"], [entry]))
+    validate_destinations(records)
+    output = dict(manifest, models=records,
+                  comment="Local deployment records derived from authenticated acquisition. Review and authenticate this manifest before offline use; not an acquisition manifest.")
+    staging = path.parent / (".deployment-" + uuid.uuid4().hex)
+    try:
+        with staging.open("x", encoding="utf-8") as stream:
+            json.dump(output, stream, indent=2)
+            stream.write("\n")
+        # Exclusive publication refuses existing outputs, including concurrent creation.
+        os.link(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
 class HTTPSOnly(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if urllib.parse.urlsplit(newurl).scheme != "https":
@@ -207,6 +248,8 @@ def main(argv=None):
     parser.add_argument("--model-root", type=Path, default=ROOT / "models")
     parser.add_argument("--group", action="append")
     parser.add_argument("--include-optional", action="store_true", help="Explicitly acquire optional assets too")
+    parser.add_argument("--deployment-manifest", type=Path,
+                        help="Write a new local deployment manifest with trusted archive-member records")
     parser.add_argument("--local-dir", type=Path)
     parser.add_argument("--policy", type=Path, default=ROOT / "offline/policy.json")
     parser.add_argument("--acquisition-only", action="store_true")
@@ -237,6 +280,13 @@ def main(argv=None):
             raise ValueError("Model root cannot contain symlinks")
         root.mkdir(parents=True, exist_ok=True)
         root = root.resolve()
+        deployment = args.deployment_manifest.absolute() if args.deployment_manifest else None
+        if deployment:
+            if deployment.exists() or deployment.is_symlink() or any(parent.is_symlink() for parent in deployment.parents):
+                raise ValueError("Deployment output must be new and contain no symlinks")
+            if not deployment.parent.is_dir() or deployment == root or root in deployment.parents:
+                raise ValueError("Deployment output requires an existing parent outside model root")
+        replacements = {}
         for entry in entries:
             destination = safe_target(root, entry["destination"])
             spec = entry["extraction"]
@@ -268,9 +318,12 @@ def main(argv=None):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 safe_target(root, entry["destination"])
                 os.replace(staged, destination)
-                print(entry["id"] + ": verified and installed")
+                replacements[entry["id"]] = deployment_records(entry, destination)
+                print(entry["id"] + ": verified and staged")
             finally:
                 shutil.rmtree(scratch)
+        if deployment:
+            write_deployment(deployment, manifest, replacements)
         return 0
     except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile, tarfile.TarError) as error:
         print(str(error), file=sys.stderr)
