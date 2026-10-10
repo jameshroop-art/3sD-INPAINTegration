@@ -1,0 +1,31 @@
+{
+  "model_root": "models",
+  "comment": "All paths are relative to repo root and must resolve beneath model_root.",
+  "detection": {
+    "person_detector": "detect/yolox_l.onnx"
+  },
+  "pose": {
+    "wholebody_fallback": "pose/dwpose/dw-ll_ucoco_384.onnx",
+    "wholebody_3d": "pose/rtmw3d/onnx/rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.onnx"
+  },
+  "segmentation": {
+    "sam2_checkpoint": "segment/sam2/sam2.1_hiera_large.pt",
+    "birefnet_package": "segment/birefnet"
+  },
+  "face": {
+    "insightface_root": "face/insightface",
+    "face_landmarker": "face/landmarks/face_landmarker.task",
+    "face_parser": "face/parse/parsing_bisenet.pth"
+  },
+  "llm": {
+    "text_model": "llm/text/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+    "vision_model": "llm/vision/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+    "vision_projector": "llm/vision/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf"
+  },
+  "inpaint": {
+    "checkpoint": "sd/sd15/sd-v1-5-inpainting.ckpt",
+    "openpose_control": "sd/controlnet-sd15/control_v11p_sd15_openpose.pth",
+    "depth_control": "sd/controlnet-sd15/control_v11f1p_sd15_depth.pth",
+    "hair_lineart_control": "sd/controlnet-sd15/control_v11p_sd15_lineart.pth"
+  }
+}
