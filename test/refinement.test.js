@@ -248,7 +248,7 @@ test('bad extraction, identity guards and backend failures abort without publica
     { method: 'extract', implementation: async () => ({ ...observations(), faceLandmarks: [] }), error: /sparse/ },
     { method: 'extract', implementation: async () => ({ ...observations(), contours: [] }), error: /contours/ },
     { method: 'extract', implementation: async () => ({ ...observations(), bodyParsing: null }), error: /bodyParsing/ },
-    { method: 'extract', implementation: async () => ({ ...observations(), bodyJoints: Array(133) }), error: /133/ },
+    { method: 'extract', implementation: async () => ({ ...observations(), bodyJoints: Array(133) }), error: /null \(dropped\)/ },
     { method: 'extract', implementation: async () => ({ ...observations(), hairMask: null }), error: /hairMask/ },
     { method: 'checkIdentity', implementation: async () => 1, error: /boolean/ },
     { method: 'smoothHair', implementation: async () => null, error: /hair mask/ },

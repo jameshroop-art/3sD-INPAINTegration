@@ -212,11 +212,18 @@ test('rejects blocky or incomplete view analyses before fitting', async t => {
     [analysis({ contours: [[1.5, 2.25, 3.75, 4.1]] }), /at least 64/],
     [analysis({ matte: null }), /matte/],
     [analysis({ faceParsing: undefined }), /faceParsing/],
-    [analysis({ faceLandmarks: { sparse: points(68), medium: points(99), dense: points(468) } }), /medium/],
-    [analysis({ faceLandmarks: { sparse: points(67), medium: points(106), dense: points(468) } }), /sparse/],
-    [analysis({ faceLandmarks: { sparse: points(68), medium: points(106), dense: points(300) } }), /dense/],
-    [analysis({ faceLandmarks: null }), /tiers/],
+    [analysis({ faceLandmarks: { sparse: points(68), medium: points(99) } }), /medium/],
+    [analysis({ faceLandmarks: { sparse: points(67), medium: points(106) } }), /sparse/],
+    [analysis({ faceLandmarks: { sparse: points(68), dense: points(300) } }), /dense/],
+    [analysis({ faceLandmarks: { sparse: points(68), medium: points(106), dense: points(468) } }), /one face add-on/],
+    [analysis({ faceLandmarks: null }), /68-point/],
     [analysis({ bodyJoints: points(17) }), /133/],
+    [analysis({ poseMode: 'body25', bodyJoints: points(133) }), /25/],
+    [analysis({ poseMode: 'densepose' }), /poseMode/],
+    [analysis({ bodyJoints: [...points(132), { x: 1, y: 1, z: 0, confidence: 0.3 }] }), /threshold 0.45/],
+    [analysis({ bodyJoints: Array(133).fill(null) }), /no points above/],
+    [analysis({ bodyJoints: [...points(132), { x: 1, y: 1, z: 0 }] }), /null \(dropped\)/],
+    [analysis({ keypointThreshold: 2 }), /keypointThreshold/],
   ];
   for (const [bad, error] of cases) {
     let fitted = false;
@@ -227,6 +234,20 @@ test('rejects blocky or incomplete view analyses before fitting', async t => {
     });
     await assert.rejects(pipeline.prepare('subject', views(source)), error);
     assert.equal(fitted, false);
+  }
+  const modes = [
+    analysis({ poseMode: 'body18', bodyJoints: [...points(17), null] }),
+    analysis({ poseMode: 'body25', bodyJoints: points(25) }),
+    analysis({ faceLandmarks: { sparse: [null, ...points(67)], dense: points(468) } }),
+    analysis({ keypointThreshold: 0.2, bodyJoints: [...points(132), { x: 1, y: 1, z: 0, confidence: 0.3 }] }),
+  ];
+  for (const mode of modes) {
+    const pipeline = new DigitalDoublePipeline(library, {
+      async analyzeViews({ views: input }) { return input.map(() => mode); },
+      async fitGeometry() { throw new Error('reached fitting'); },
+      async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
+    });
+    await assert.rejects(pipeline.prepare('subject', views(source)), /reached fitting/);
   }
   const rear = new DigitalDoublePipeline(library, {
     async analyzeViews({ views: input }) {
@@ -243,7 +264,7 @@ test('rejects blocky or incomplete view analyses before fitting', async t => {
     async fitGeometry() { throw new Error('reached fitting'); },
     async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
   });
-  await assert.rejects(occluded.prepare('subject', views(source)), /tiers/);
+  await assert.rejects(occluded.prepare('subject', views(source)), /68-point/);
 });
 
 test('CLI imports, inspects, lists and reports usage and missing identities', async t => {

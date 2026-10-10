@@ -14,7 +14,7 @@ export function analysis(overrides = {}) {
     imageSize: { width: 100, height: 100 },
     matte: 'soft alpha matte', faceParsing: 'bisenet face parsing', bodyParsing: 'body part parsing',
     contours: [subpixelContour()],
-    faceLandmarks: { sparse: points(68), medium: points(106), dense: points(468) },
+    faceLandmarks: { sparse: points(68), medium: points(106) },
     bodyJoints: points(BODY_JOINTS),
     ...overrides,
   };
