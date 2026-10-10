@@ -416,8 +416,17 @@ def isolated(commands, cwd, env=None, capture=False):
             if not isinstance(value, str) or "\x00" in value or (key in clean and value != clean[key]):
                 fail("Execution environment cannot override sanitized offline settings.")
             clean[key] = value
+    work_base = Path(cwd)
+    if (work_base / ".git").exists():
+        if work_base.parent.name == "external":
+            work_base = local(work_base.parent.parent, "offline/inspection", exists=False)
+        elif work_base.parent.name == "sources" and work_base.parent.parent.name == "offline":
+            work_base = local(work_base.parent.parent, "inspection", exists=False)
+        else:
+            work_base = local(work_base.parent, "offline-inspection", exists=False)
+        work_base.mkdir(parents=True, mode=0o700, exist_ok=True)
     for name, variables in (("cache", ("XDG_CACHE_HOME",)), ("scratch", ("TMPDIR", "TMP", "TEMP")), ("home", ("HOME",))):
-        directory = local(cwd, name, exists=False)
+        directory = local(work_base, name, exists=False)
         directory.mkdir(mode=0o700, exist_ok=True)
         if not directory.is_dir():
             fail("Approved local runtime working paths must be directories.")
