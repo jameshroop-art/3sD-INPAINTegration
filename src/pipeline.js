@@ -15,6 +15,8 @@ const STAGES = Object.freeze([
   'analyzeViews', 'fitGeometry', 'bakeAlbedo', 'mapScalp', 'reconstructGroom', 'archiveSpatialMaps',
 ]);
 
+const FACE_VISIBLE = Object.freeze(new Set(['front', 'right_three_quarter', 'left_three_quarter']));
+
 const RENDER_MAPS = Object.freeze(['baldComposite', 'hairMask', 'depth', 'lineart', 'parsing', 'keypoints']);
 
 async function validateViews(views) {
@@ -44,7 +46,7 @@ function validateAnalyses(analyses, views) {
     throw new Error('analyzeViews must return one analysis per view, in view order.');
   }
   for (const [index, analysis] of analyses.entries()) {
-    validateAnalysis(analysis, { requireFace: views[index].angle === 'front' });
+    validateAnalysis(analysis, { requireFace: FACE_VISIBLE.has(views[index].angle) });
   }
   return Object.freeze([...analyses]);
 }

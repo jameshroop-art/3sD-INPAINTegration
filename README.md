@@ -123,8 +123,8 @@ same contract applies to refinement `extract` observations.
 | `contours` | Nonempty array of closed subject outlines traced from the matte edge, each a flat `[x0, y0, x1, y1, …]` array (or typed array) of at least `MIN_CONTOUR_POINTS` (64) points inside the image with nonzero enclosed area. Outlines whose every coordinate lies on the pixel or half-pixel grid are rejected as blocky staircases; trace the iso-contour of the soft alpha with subpixel interpolation instead. |
 | `faceParsing` | BiSeNet face-parsing label map (for example the 19 CelebAMask-HQ classes: skin, brows, eyes, ears, nose, lips, hair, neck, …). Used for face texture placement and ControlNet conditioning. |
 | `bodyParsing` | Body-part parsing map (head, torso, upper/lower arms, hands, legs, feet, clothing) for rigging, skinning weights, and texture region assignment. |
-| `faceLandmarks` | `{ sparse, medium, dense }` (`FACE_LANDMARK_TIERS`): exactly 68 points (iBUG-68), at least 100 points (for example 106-point 2D landmarks), and at least 400 points (for example a 468/478-point face mesh). Required for the `front` view; `null` only when the face is not visible, such as rear views. |
-| `bodyJoints` | At least 133 indexed points (`BODY_JOINTS`, COCO-WholeBody body, feet, face, and hands). |
+| `faceLandmarks` | `{ sparse, medium, dense }` (`FACE_LANDMARK_TIERS`): exactly 68 points (iBUG-68), at least 100 points (for example 106-point 2D landmarks), and at least 400 points (for example a 468/478-point face mesh). Required for the `front` and both three-quarter views; `null` only when the face is not visible, such as rear, profile-occluded, or crown views. |
+| `bodyJoints` | Exactly 133 indexed points (`BODY_JOINTS`, COCO-WholeBody body, feet, face, and hands). |
 
 Point objects contain finite `x`, `y`, `z` and `confidence` in `[0, 1]`; array
 indices must follow the producing model's documented order. Occluded points are

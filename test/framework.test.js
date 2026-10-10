@@ -236,6 +236,14 @@ test('rejects blocky or incomplete view analyses before fitting', async t => {
     async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
   });
   await assert.rejects(rear.prepare('subject', views(source)), /reached fitting/);
+  const occluded = new DigitalDoublePipeline(library, {
+    async analyzeViews({ views: input }) {
+      return input.map(view => analysis(view.angle === 'left_three_quarter' ? { faceLandmarks: null } : {}));
+    },
+    async fitGeometry() { throw new Error('reached fitting'); },
+    async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
+  });
+  await assert.rejects(occluded.prepare('subject', views(source)), /tiers/);
 });
 
 test('CLI imports, inspects, lists and reports usage and missing identities', async t => {
