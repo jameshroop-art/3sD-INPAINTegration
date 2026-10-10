@@ -249,8 +249,15 @@ Offline verification uses the same archive entry and its reviewed
 `extraction.member_sha256` map: every allowed extracted member needs an
 authenticated artifact-inventory record and matching member hash. The exact
 allowlist, size limit and actual directory contents must match, with no links
-or unexpected files. No separate deployment-manifest conversion or CLI option
-is required. A directory is never hashed as the original archive.
+or unexpected files. A directory is never hashed as the original archive.
+Optional `--deployment-manifest /absolute/reviewed/deployment-manifest.json`
+on `scripts/fetch_models.py` emits same-schema individually ready member
+records after trusted extraction, preserving parent archive provenance and
+unselected entries. The output must be outside the model root with an existing
+safe parent and must not already exist. Human review/authentication of the
+emitted manifest and files remains required; output generation does not
+self-authorize missing hashes. Deployment-only member entries are not acquisition
+download entries.
 
 Each requirement line is exactly:
 

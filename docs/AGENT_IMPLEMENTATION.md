@@ -105,6 +105,9 @@ Run `download_sam2_config.sh` with the same arguments for its separately invento
 config. `download_optional_sdxl_controls.sh` is optional and currently refuses.
 Acquisition skips optional entries by default; `--include-optional` explicitly
 selects them and still refuses blocked assets before transfer.
+Optional `--deployment-manifest` emits reviewed-hash member records after trusted
+extraction into a new safe output outside the model root. Review/authenticate
+that output before deployment; retained parent provenance is not self-approval.
 **Outputs:** hash-verified selected assets, not a licensed working stack.
 **Failures:** unknown SHA-256, blocked model, size mismatch, unsafe archive/member
 or unsupported backend blocks acquisition. **Tests:** local synthetic transfer,

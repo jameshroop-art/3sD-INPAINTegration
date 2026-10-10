@@ -206,6 +206,8 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(record["parent_sha256"], entry["sha256"])
         self.assertEqual(record["extraction"], {"type": "none"})
         self.assertIsNone(record["source_url"])
+        with self.assertRaises(ValueError):
+            fetch.trusted(record)
 
     def test_deployment_output_refuses_overwrite_and_model_root(self):
         output = self.root / "existing.json"

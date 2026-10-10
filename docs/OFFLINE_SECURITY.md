@@ -73,6 +73,10 @@ Offline verification accepts the shared reviewed archive entry only with its
 complete member allowlist/hash map, size limit and individually authenticated
 artifact records. Missing/unexpected files, links or mismatched member hashes
 block. No separate deployment inventory conversion is required.
+Acquisition can optionally emit a same-schema deployment manifest with
+individually hashed member records and parent archive provenance. Safe exclusive
+publication prevents overwrite, but the generated output still needs independent
+human authentication and must not be reused as acquisition download instructions.
 Source builds additionally
 require a ready lock entry with an approved 40-hex commit and license, a clean
 local checkout, no unsupported submodules/symlinks, and hashed source files.

@@ -4,6 +4,9 @@ coverage/
 
 # Local acquisition, build environments, and private creation data.
 .venv*/
+.offline-test-*/
+.wheel-rules-test-*/
+.acquisition-test-*/
 venv/
 __pycache__/
 *.py[cod]

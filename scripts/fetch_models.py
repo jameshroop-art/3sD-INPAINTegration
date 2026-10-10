@@ -75,6 +75,8 @@ def digest(path):
 
 
 def trusted(entry):
+    if entry.get("acquisition") == "deployment-only":
+        raise ValueError(entry["id"] + ": deployment records cannot authorize acquisition")
     if entry.get("status") != "ready":
         raise ValueError(f"{entry['id']}: blocked; human review required")
     if not re.fullmatch(r"[0-9a-f]{64}", entry.get("sha256") or ""):
