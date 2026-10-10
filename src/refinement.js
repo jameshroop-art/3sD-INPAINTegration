@@ -51,6 +51,9 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
   for (const [key, method] of [['physics', 'simulate'], ['renderer', 'render'], ['diffusion', 'inpaint']]) {
     if (typeof renderAdapters[key]?.[method] !== 'function') throw new Error(`Backend must implement ${method}().`);
   }
+  if (renderAdapters.prompter !== undefined && typeof renderAdapters.prompter?.compose !== 'function') {
+    throw new Error('Backend must implement compose().');
+  }
   const directory = await mkdtemp(join(tmpdir(), 'digital-double-refine-'));
   try {
     const paths = {};

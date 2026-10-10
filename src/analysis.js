@@ -4,9 +4,16 @@ export const MIN_PERSPECTIVES = 9;
 export const MIN_CONTOUR_POINTS = 64;
 export const KEYPOINT_THRESHOLD = 0.45;
 
-// One body mode per pass. `wholebody` (COCO-WholeBody 133: body, feet, 68 face, 2×21 hands)
-// is the default intricate OpenPose-full rig.
-export const POSE_MODES = Object.freeze({ body18: 18, body25: 25, wholebody: 133 });
+// One body mode per pass:
+// - body18 / body25: OpenPose body (BODY_25 adds feet).
+// - openposeFull: OpenPose 18 body + 68 face + 21 left hand + 21 right hand (DWPose regroup).
+// - wholebody: COCO-WholeBody 133 (17 body, 6 feet, 68 face, 2×21 hands), what the
+//   DWPose/RTMW/RTMPose packs emit; the default.
+// - wholebody3d: the same 133 layout with depth from single-view rtmw3d.
+export const POSE_MODES = Object.freeze({
+  body18: 18, body25: 25, openposeFull: 128, wholebody: 133, wholebody3d: 133,
+});
+export const DEPTH_POSE_MODES = Object.freeze(['wholebody3d']);
 export const DEFAULT_POSE_MODE = 'wholebody';
 export const BODY_JOINTS = POSE_MODES[DEFAULT_POSE_MODE];
 
@@ -104,4 +111,10 @@ export function validateAnalysis(analysis, { requireFace = false } = {}) {
     throw new Error(`poseMode must be one of ${Object.keys(POSE_MODES).join(', ')}.`);
   }
   validatePoints(analysis.bodyJoints, { min: POSE_MODES[mode] }, `Body joints (${mode})`, threshold);
+  const kept = analysis.bodyJoints.filter(point => point !== null);
+  if (DEPTH_POSE_MODES.includes(mode)) {
+    if (kept.every(point => point.z === 0)) throw new Error(`${mode} joints must carry depth (z).`);
+  } else if (kept.some(point => point.z !== 0)) {
+    throw new Error(`${mode} is a 2D mode: joint z must be 0. Use wholebody3d for depth.`);
+  }
 }

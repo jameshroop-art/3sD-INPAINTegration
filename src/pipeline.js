@@ -57,7 +57,17 @@ function requireMethods(backend, methods) {
   }
 }
 
-async function render(bundle, request, { physics, renderer, diffusion }, feedback) {
+async function composePrompt(prompter, input) {
+  requireMethods(prompter, ['compose']);
+  const result = await prompter.compose(input);
+  if (typeof result?.prompt !== 'string' || result.prompt.trim() === '' ||
+      (result.negativePrompt !== undefined && typeof result.negativePrompt !== 'string')) {
+    throw new Error('Prompter must return a nonempty prompt string and optional negativePrompt string.');
+  }
+  return { prompt: result.prompt, ...(result.negativePrompt !== undefined ? { negativePrompt: result.negativePrompt } : {}) };
+}
+
+async function render(bundle, request, { physics, renderer, diffusion, prompter }, feedback) {
   requireMethods(physics, ['simulate']);
   requireMethods(renderer, ['render']);
   requireMethods(diffusion, ['inpaint']);
@@ -78,8 +88,12 @@ async function render(bundle, request, { physics, renderer, diffusion }, feedbac
   for (const key of RENDER_MAPS) {
     if (maps?.[key] == null) throw new Error(`Renderer must provide ${key}.`);
   }
+  // Optional local LLM/VLM (for example llama.cpp) writes the sd-cli prompt from the maps.
+  const prompts = prompter === undefined ? {} : await composePrompt(prompter, {
+    identity: bundle.identity, time, pose, scene, camera, yaw, maps,
+  });
   return diffusion.inpaint({
-    ...maps, identity: bundle.identity, time,
+    ...maps, ...prompts, identity: bundle.identity, time,
     ...(feedback ? { camera, yaw, identityEmbedding: feedback.identityEmbedding, controlDepth: maps.depth } : {}),
   });
 }
@@ -109,10 +123,10 @@ export class DigitalDoublePipeline {
     }
   }
 
-  async renderFrame(identity, request, { physics, renderer, diffusion }) {
+  async renderFrame(identity, request, { physics, renderer, diffusion, prompter }) {
     const bundle = await this.library.load(identity);
     if (!bundle) throw new Error(`Unknown identity: ${identity}`);
-    return render(bundle, request, { physics, renderer, diffusion });
+    return render(bundle, request, { physics, renderer, diffusion, prompter });
   }
 
   async refineSequence(sourceIdentity, targetIdentity, requests, adapters) {

@@ -196,6 +196,28 @@ test('routes immutable assets to simulation and generated maps to diffusion', as
   await assert.rejects(pipeline.renderFrame('subject', {
     time: 0, dynamics: { wind: 15 },
   }, adapters), /baldComposite/);
+  adapters.renderer.render = async () => {
+    order.push('render');
+    return {
+      baldComposite: 'bald', hairMask: 'mask', depth: 'depth', lineart: 'lines',
+      parsing: 'parsing control', keypoints: 'keypoint control',
+    };
+  };
+  adapters.prompter = { async compose(input) {
+    order.push('prompt');
+    assert.equal(input.maps.parsing, 'parsing control');
+    return { prompt: 'photo of subject', negativePrompt: 'blurry' };
+  } };
+  adapters.diffusion.inpaint = async input => {
+    assert.equal(input.prompt, 'photo of subject');
+    assert.equal(input.negativePrompt, 'blurry');
+    return 'prompted frame';
+  };
+  assert.equal(await pipeline.renderFrame('subject', { time: 0, dynamics: { wind: 15 }, scene: { hdri: 'environment' } }, adapters), 'prompted frame');
+  assert.deepEqual(order.slice(-3), ['physics', 'render', 'prompt']);
+  adapters.prompter.compose = async () => ({ prompt: '  ' });
+  await assert.rejects(pipeline.renderFrame('subject', { time: 0, dynamics: { wind: 15 }, scene: { hdri: 'environment' } }, adapters), /nonempty prompt/);
+  delete adapters.prompter;
   adapters.renderer.render = async () => ({ baldComposite: 'b', hairMask: 'm', depth: 'd', lineart: 'l' });
   await assert.rejects(pipeline.renderFrame('subject', { time: 0, dynamics: { wind: 15 } }, adapters), /parsing/);
 });
