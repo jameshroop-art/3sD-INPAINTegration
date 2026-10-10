@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/assets.js && node --check src/pipeline.js && node --check src/refinement.js && node --check src/texture.js && node --check src/cli.js"
+    "check": "node --check src/analysis.js && node --check src/assets.js && node --check src/pipeline.js && node --check src/refinement.js && node --check src/texture.js && node --check src/cli.js"
   },
   "engines": { "node": ">=22" },
   "keywords": [],

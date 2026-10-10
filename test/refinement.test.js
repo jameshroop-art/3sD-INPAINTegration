@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   ASSETS, OPTIONAL_ASSETS, AssetLibrary, ConfidenceAtlas, DigitalDoublePipeline,
 } from '../src/index.js';
+import { analysis } from './fixtures.js';
 
 function requests(count = 2) {
   return Array.from({ length: count }, (_, time) => ({
@@ -18,9 +19,8 @@ function requests(count = 2) {
 }
 
 function observations() {
-  const points = length => Array.from({ length }, () => ({ x: 0, y: 0, z: 0, confidence: 0.8 }));
   return {
-    faceLandmarks: points(468), bodyJoints: points(133),
+    ...analysis(),
     skin: 'skin buffer', bodyTexture: 'body texture buffer', bodyMask: 'body mask buffer',
     hairMask: 'raw hair mask', strandDirections: 'direction field buffer',
   };
@@ -50,13 +50,17 @@ async function fixture(t) {
     renderer: { async render(input) {
       calls.push(`render:${input.state.revision}`);
       assert.equal(input.camera, frames[input.time].camera);
-      return { baldComposite: 'bald', hairMask: 'rendered mask', depth: 'head depth', lineart: 'lines' };
+      return {
+        baldComposite: 'bald', hairMask: 'rendered mask', depth: 'head depth', lineart: 'lines',
+        parsing: 'parsing control', keypoints: 'keypoint control',
+      };
     } },
     diffusion: { async inpaint(input) {
       calls.push(`diffusion:${input.time}`);
       assert.deepEqual(input.identityEmbedding, [1, 0]);
       assert.ok(Object.isFrozen(input.identityEmbedding));
       assert.equal(input.controlDepth, 'head depth');
+      assert.equal(input.parsing, 'parsing control');
       return { buffer: Buffer.from(`frame ${input.time}`), time: input.time };
     } },
     feedback: {
@@ -139,16 +143,18 @@ test('confidence atlas validates whole batches without partial writes', () => {
 
 test('each frame uses previous refinements, guards before updates and publishes eight assets', async t => {
   const f = await fixture(t);
-  const result = await f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 2), f.adapters);
-  assert.equal(result.acceptedFrames, 2);
+  const result = await f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 9), f.adapters);
+  assert.equal(result.acceptedFrames, 9);
   assert.equal(result.rejectedFrames, 0);
   assert.deepEqual(f.calls, [
-    'initialize', 'physics:0', 'render:0', 'diffusion:0', 'extract:0', 'guard:0', 'smooth:0',
-    'albedo', 'geometry', 'skeleton', 'hair',
-    'physics:1', 'render:1', 'diffusion:1', 'extract:1', 'guard:1', 'smooth:1',
-    'albedo', 'geometry', 'skeleton', 'hair', 'finalize',
+    'initialize',
+    ...Array.from({ length: 9 }, (_, i) => [
+      `physics:${i}`, `render:${i}`, `diffusion:${i}`, `extract:${i}`, `guard:${i}`, `smooth:${i}`,
+      'albedo', 'geometry', 'skeleton', 'hair',
+    ]).flat(),
+    'finalize',
   ]);
-  assert.equal(await readFile(result.bundle.paths.head, 'utf8'), 'refined 2');
+  assert.equal(await readFile(result.bundle.paths.head, 'utf8'), 'refined 9');
   assert.equal(await readFile(result.bundle.paths.bodyAlbedo, 'utf8'), 'test body albedo');
   assert.deepEqual((await f.library.load('original')).manifest, f.original.manifest);
   assert.equal(await readFile(f.original.paths.head, 'utf8'), 'original mesh_head.obj');
@@ -176,22 +182,45 @@ test('rejected frames do not update state or become smoothing references', async
   const f = await fixture(t);
   f.adapters.feedback.checkIdentity = async ({ request }) => request.time !== 1;
   f.adapters.feedback.smoothHair = async ({ previous, request }) => {
-    assert.equal(previous?.request.time ?? null, request.time === 0 ? null : 0);
+    const expected = request.time === 0 ? null : request.time === 2 ? 0 : request.time - 1;
+    assert.equal(previous?.request.time ?? null, expected);
     return 'smoothed hair mask';
   };
   const streamed = [];
   f.adapters.onFrame = async frame => streamed.push(frame.accepted);
-  const result = await f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 3), f.adapters);
-  assert.equal(result.acceptedFrames, 2);
+  const result = await f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 10), f.adapters);
+  assert.equal(result.acceptedFrames, 9);
   assert.equal(result.rejectedFrames, 1);
-  assert.deepEqual(streamed, [true, false, true]);
-  assert.equal(f.calls.filter(call => call === 'albedo').length, 2);
+  assert.deepEqual(streamed, [true, false, ...Array(8).fill(true)]);
+  assert.equal(f.calls.filter(call => call === 'albedo').length, 9);
+});
+
+test('fewer than nine perspectives are rejected before initializing or finalizing', async t => {
+  const f = await fixture(t);
+  await assert.rejects(
+    f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 8), f.adapters), /9 distinct yaw/);
+  const repeated = f.frames.slice(0, 9).map((frame, i) => ({ ...frame, yaw: (i % 8) * 15 }));
+  await assert.rejects(f.pipeline.refineSequence('original', 'refined', repeated, f.adapters), /9 distinct yaw/);
+  assert.deepEqual(f.calls, []);
+  f.adapters.feedback.checkIdentity = async ({ request }) => request.time !== 4;
+  f.adapters.feedback.smoothHair = async () => 'smoothed hair mask';
+  await assert.rejects(
+    f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 9), f.adapters), /Only 8 accepted/);
+  assert.equal(f.calls.includes('finalize'), false);
+  assert.equal(await f.library.load('refined'), null);
+});
+
+test('rear frames may omit face landmarks but still need contours and parsing', async t => {
+  const f = await fixture(t);
+  f.adapters.feedback.extract = async () => ({ ...observations(), faceLandmarks: null });
+  const result = await f.pipeline.refineSequence('original', 'rear', f.frames.slice(0, 9), f.adapters);
+  assert.equal(result.acceptedFrames, 9);
 });
 
 test('all-rejected frames fail without finalizing or publishing', async t => {
   const f = await fixture(t);
   f.adapters.feedback.checkIdentity = async () => false;
-  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 1), f.adapters), /No frames/);
+  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 9), f.adapters), /No frames/);
   assert.equal(f.calls.includes('finalize'), false);
   assert.equal(await f.library.load('refined'), null);
   await assert.rejects(readdir(f.workspace()), { code: 'ENOENT' });
@@ -216,7 +245,9 @@ test('invalid requests or target identities fail before initializing', async t =
 
 test('bad extraction, identity guards and backend failures abort without publication', async t => {
   const cases = [
-    { method: 'extract', implementation: async () => ({ ...observations(), faceLandmarks: [] }), error: /468/ },
+    { method: 'extract', implementation: async () => ({ ...observations(), faceLandmarks: [] }), error: /sparse/ },
+    { method: 'extract', implementation: async () => ({ ...observations(), contours: [] }), error: /contours/ },
+    { method: 'extract', implementation: async () => ({ ...observations(), bodyParsing: null }), error: /bodyParsing/ },
     { method: 'extract', implementation: async () => ({ ...observations(), bodyJoints: Array(133) }), error: /133/ },
     { method: 'extract', implementation: async () => ({ ...observations(), hairMask: null }), error: /hairMask/ },
     { method: 'checkIdentity', implementation: async () => 1, error: /boolean/ },
@@ -228,7 +259,7 @@ test('bad extraction, identity guards and backend failures abort without publica
     await t.test(method, async child => {
       const f = await fixture(child);
       f.adapters.feedback[method] = implementation;
-      await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 1), f.adapters), error);
+      await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 9), f.adapters), error);
       assert.equal(await f.library.load('refined'), null);
       assert.ok(await f.library.load('original'));
       await assert.rejects(readdir(f.workspace()), { code: 'ENOENT' });
@@ -271,7 +302,7 @@ test('optional body albedo must be a regular file, not a symlink', async t => {
   f.adapters.feedback.finalize = async ({ directory, assets }) => {
     await symlink(f.original.paths.albedo, join(directory, assets.bodyAlbedo));
   };
-  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 1), f.adapters), /body albedo/);
+  await assert.rejects(f.pipeline.refineSequence('original', 'refined', f.frames.slice(0, 9), f.adapters), /body albedo/);
   assert.equal(await f.library.load('refined'), null);
 });
 
@@ -285,12 +316,12 @@ test('refinement cannot overwrite an existing target', async t => {
 
 test('refining a textured source requires fresh body-albedo export', async t => {
   const f = await fixture(t);
-  await f.pipeline.refineSequence('original', 'textured', f.frames.slice(0, 1), f.adapters);
+  await f.pipeline.refineSequence('original', 'textured', f.frames.slice(0, 9), f.adapters);
   const source = await f.library.load('textured');
   f.adapters.feedback.initialize = async () => ({ state: f.state, identityEmbedding: [1, 0] });
   f.adapters.feedback.finalize = async () => {};
   await assert.rejects(
-    f.pipeline.refineSequence('textured', 'stale', f.frames.slice(0, 1), f.adapters),
+    f.pipeline.refineSequence('textured', 'stale', f.frames.slice(0, 9), f.adapters),
     /ENOENT/,
   );
   assert.equal(await f.library.load('stale'), null);

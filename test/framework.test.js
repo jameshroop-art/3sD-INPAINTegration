@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ASSETS, AssetLibrary, DigitalDoublePipeline, VIEW_ANGLES } from '../src/index.js';
+import { analysis, points } from './fixtures.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'digital-double-test-'));
@@ -106,26 +107,31 @@ test('runs reconstruction stages in order once, then bypasses all backends and s
   const calls = [];
   let workspace;
   const reconstruction = {};
-  for (const stage of ['fitGeometry', 'bakeAlbedo', 'mapScalp', 'reconstructGroom', 'archiveSpatialMaps']) {
+  const stages = ['analyzeViews', 'fitGeometry', 'bakeAlbedo', 'mapScalp', 'reconstructGroom', 'archiveSpatialMaps'];
+  for (const stage of stages) {
     reconstruction[stage] = async context => {
       calls.push(stage);
       workspace = context.directory;
+      if (stage === 'analyzeViews') return context.views.map(() => analysis());
+      assert.equal(context.analyses.length, VIEW_ANGLES.length);
+      assert.ok(Object.isFrozen(context.analyses));
       if (stage === 'archiveSpatialMaps') await createAssets(context.directory);
     };
   }
   const pipeline = new DigitalDoublePipeline(library, reconstruction);
   assert.equal((await pipeline.prepare('subject', views(source))).reused, false);
-  assert.deepEqual(calls, Object.keys(reconstruction));
+  assert.deepEqual(calls, stages);
   await assert.rejects(readdir(workspace), { code: 'ENOENT' });
   assert.equal((await new DigitalDoublePipeline(library).prepare('subject')).reused, true);
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 6);
 });
 
-test('validates five-angle inputs before fitting and cleans up after backend failure', async t => {
+test('validates nine-perspective inputs before fitting and cleans up after backend failure', async t => {
   const { source, library } = await fixture(t);
   let workspace;
   let fitted = false;
   const reconstruction = {
+    async analyzeViews({ views: input }) { return input.map(() => analysis()); },
     async fitGeometry(context) {
       fitted = true;
       workspace = context.directory;
@@ -134,12 +140,15 @@ test('validates five-angle inputs before fitting and cleans up after backend fai
     async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
   };
   const pipeline = new DigitalDoublePipeline(library, reconstruction);
-  await assert.rejects(pipeline.prepare('subject', views(source).slice(0, 4)), /five/);
+  assert.equal(VIEW_ANGLES.length, 9);
+  await assert.rejects(pipeline.prepare('subject', views(source).slice(0, 8)), /At least 9/);
   const invalid = views(source);
-  invalid.reverse();
-  await assert.rejects(pipeline.prepare('subject', invalid), /Expected view/);
-  invalid.reverse();
-  invalid[0].camera.intrinsics[0] = NaN;
+  invalid.push({ ...invalid[0] });
+  await assert.rejects(pipeline.prepare('subject', invalid), /unique angle/);
+  invalid[9] = { ...invalid[0], angle: 'extra_low_front' };
+  invalid[0] = { ...invalid[0], angle: 'other' };
+  await assert.rejects(pipeline.prepare('subject', invalid), /Expected view front/);
+  invalid[0] = { ...invalid[9], angle: 'front', camera: { ...invalid[9].camera, intrinsics: [NaN, 0, 0, 0, 1, 0, 0, 0, 1] } };
   await assert.rejects(pipeline.prepare('subject', invalid), /matrices/);
   assert.equal(fitted, false);
   await assert.rejects(pipeline.prepare('subject', views(source)), /fit failed/);
@@ -164,12 +173,17 @@ test('routes immutable assets to simulation and generated maps to diffusion', as
       order.push('render');
       assert.equal(input.curves, 'animated curves');
       assert.equal(input.scene.hdri, 'environment');
-      return { baldComposite: 'bald', hairMask: 'mask', depth: 'depth', lineart: 'lines' };
+      return {
+        baldComposite: 'bald', hairMask: 'mask', depth: 'depth', lineart: 'lines',
+        parsing: 'parsing control', keypoints: 'keypoint control',
+      };
     } },
     diffusion: { async inpaint(input) {
       order.push('diffusion');
       assert.equal(input.hairMask, 'mask');
       assert.equal(input.depth, 'depth');
+      assert.equal(input.parsing, 'parsing control');
+      assert.equal(input.keypoints, 'keypoint control');
       return 'frame';
     } },
   };
@@ -182,6 +196,46 @@ test('routes immutable assets to simulation and generated maps to diffusion', as
   await assert.rejects(pipeline.renderFrame('subject', {
     time: 0, dynamics: { wind: 15 },
   }, adapters), /baldComposite/);
+  adapters.renderer.render = async () => ({ baldComposite: 'b', hairMask: 'm', depth: 'd', lineart: 'l' });
+  await assert.rejects(pipeline.renderFrame('subject', { time: 0, dynamics: { wind: 15 } }, adapters), /parsing/);
+});
+
+test('rejects blocky or incomplete view analyses before fitting', async t => {
+  const { source, library } = await fixture(t);
+  const staircase = Array.from({ length: 64 }, (_, i) => {
+    const side = Math.floor(i / 16), step = i % 16;
+    return [[10 + step, 10], [26, 10 + step], [26 - step, 26], [10, 26 - step]][side];
+  }).flat();
+  const cases = [
+    [analysis({ contours: [staircase] }), /subpixel/],
+    [analysis({ contours: [] }), /edge contours/],
+    [analysis({ contours: [[1.5, 2.25, 3.75, 4.1]] }), /at least 64/],
+    [analysis({ matte: null }), /matte/],
+    [analysis({ faceParsing: undefined }), /faceParsing/],
+    [analysis({ faceLandmarks: { sparse: points(68), medium: points(99), dense: points(468) } }), /medium/],
+    [analysis({ faceLandmarks: { sparse: points(67), medium: points(106), dense: points(468) } }), /sparse/],
+    [analysis({ faceLandmarks: { sparse: points(68), medium: points(106), dense: points(300) } }), /dense/],
+    [analysis({ faceLandmarks: null }), /tiers/],
+    [analysis({ bodyJoints: points(17) }), /133/],
+  ];
+  for (const [bad, error] of cases) {
+    let fitted = false;
+    const pipeline = new DigitalDoublePipeline(library, {
+      async analyzeViews({ views: input }) { return input.map(view => view.angle === 'front' ? bad : analysis()); },
+      async fitGeometry() { fitted = true; },
+      async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
+    });
+    await assert.rejects(pipeline.prepare('subject', views(source)), error);
+    assert.equal(fitted, false);
+  }
+  const rear = new DigitalDoublePipeline(library, {
+    async analyzeViews({ views: input }) {
+      return input.map(view => analysis(view.angle === 'back' ? { faceLandmarks: null } : {}));
+    },
+    async fitGeometry() { throw new Error('reached fitting'); },
+    async bakeAlbedo() {}, async mapScalp() {}, async reconstructGroom() {}, async archiveSpatialMaps() {},
+  });
+  await assert.rejects(rear.prepare('subject', views(source)), /reached fitting/);
 });
 
 test('CLI imports, inspects, lists and reports usage and missing identities', async t => {
