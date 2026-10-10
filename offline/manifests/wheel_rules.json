@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "python_version": "3.12",
+  "defaults": {
+    "linux-cpu": {
+      "local_machine_only": true,
+      "no_external_sidecars": true,
+      "allow_dns": false,
+      "allow_tcp": false,
+      "allow_http": false,
+      "allow_https": false,
+      "allow_ipv4": false,
+      "allow_ipv6": false,
+      "allow_telemetry": false,
+      "allow_crash_uploads": false,
+      "allow_update_checks": false,
+      "allow_public_share_links": false,
+      "allow_external_ui_assets": false,
+      "local_paths": {"models": "models", "work": "work", "output": "out", "logs": "offline/logs"}
+    },
+    "linux-gpu-cuda": {
+      "local_machine_only": true,
+      "no_external_sidecars": true,
+      "allow_dns": false,
+      "allow_tcp": false,
+      "allow_http": false,
+      "allow_https": false,
+      "allow_ipv4": false,
+      "allow_ipv6": false,
+      "allow_telemetry": false,
+      "allow_crash_uploads": false,
+      "allow_update_checks": false,
+      "allow_public_share_links": false,
+      "allow_external_ui_assets": false,
+      "local_paths": {"models": "models", "work": "work", "output": "out", "logs": "offline/logs"}
+    },
+    "windows-gpu-cuda": {
+      "local_machine_only": true,
+      "no_external_sidecars": true,
+      "allow_dns": false,
+      "allow_tcp": false,
+      "allow_http": false,
+      "allow_https": false,
+      "allow_ipv4": false,
+      "allow_ipv6": false,
+      "allow_telemetry": false,
+      "allow_crash_uploads": false,
+      "allow_update_checks": false,
+      "allow_public_share_links": false,
+      "allow_external_ui_assets": false,
+      "local_paths": {"models": "models", "work": "work", "output": "out", "logs": "offline/logs"}
+    }
+  },
+  "rules": []
+}

@@ -5,6 +5,41 @@ It manages identity bundles and coordinates pluggable reconstruction, physics,
 rendering, and inpainting backends. It does not yet implement those backends or
 ship model weights.
 
+## Nine-view capture and offline deployment
+
+The operational specification follows **nine-view capture → connected-machine
+acquisition → physically transferred, hash-verified offline wheels → local
+creation**. The online GitHub PR is a development record only; personal images,
+embeddings, prompts, generated outputs, model weights, and device metadata must
+never enter it.
+
+- [Pipeline and capability status](docs/PIPELINE.md)
+- [Acquisition, offline installation, and cold-start procedure](docs/INSTALL.md)
+- [Offline security guarantees and limitations](docs/OFFLINE_SECURITY.md)
+- [Ordered implementation and review instructions](docs/AGENT_IMPLEMENTATION.md)
+- [Model inventory and licensing gates](models/README.md)
+
+The current capture API already requires the nine named views below. Historical
+five-view bundles remain reusable through the immutable-bundle import/cache
+contract; this does **not** mean five-view reconstruction is accepted on a cache
+miss. No existing bundle schema is replaced. Any future legacy five-view capture
+adapter must be explicit and separately tested, not silently synthesize four
+missing observations.
+
+The offline tools fail closed when trusted hashes, platform isolation, build
+recipes, or local adapters are missing. They do not implement the model backends
+or establish an end-to-end creation result. Deployment and creation belong on a
+separate disconnected machine; see the status tables before attempting setup.
+Wheel construction uses a **Python 3.12 venv** with separately acquired, reviewed
+and patched local resources. Build, install and creation must not use external
+DNS, TCP, HTTP(S), IPv4/IPv6 connectivity or out-of-framework sidecars; isolation
+and descendant-process limits require actual host validation, not just offline
+environment variables. Missing assets fail rather than trigger a runtime download.
+Each wheel also needs a reviewed, hash-bound local-machine environment rule for
+its Linux or Microsoft Windows target. “Localhost only” is not permission for a
+loopback TCP service under the no-TCP/no-IP policy. Windows rules are declarative
+until a tested Windows isolation backend exists.
+
 ## Getting started
 
 Requires Node.js 22 or newer. No runtime dependencies or installation are needed.
