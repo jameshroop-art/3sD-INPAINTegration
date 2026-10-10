@@ -1,6 +1,7 @@
 import { copyFile, lstat, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MIN_PERSPECTIVES, validateAnalysis } from './analysis.js';
 import { ASSETS, OPTIONAL_ASSETS } from './assets.js';
 
 const METHODS = [
@@ -16,17 +17,8 @@ export function validateCamera(camera) {
   }
 }
 
-function validatePoints(points, count, name) {
-  if (!Array.isArray(points) || points.length !== count ||
-      !Array.from(points).every(point => point && ['x', 'y', 'z', 'confidence'].every(key =>
-        Number.isFinite(point[key])) && point.confidence >= 0 && point.confidence <= 1)) {
-    throw new Error(`${name} requires ${count} indexed XYZ points with confidence in [0, 1].`);
-  }
-}
-
 function validateObservations(observations) {
-  validatePoints(observations?.faceLandmarks, 468, 'Face landmarks');
-  validatePoints(observations?.bodyJoints, 133, 'Body joints');
+  validateAnalysis(observations);
   for (const key of ['skin', 'bodyTexture', 'bodyMask', 'hairMask', 'strandDirections']) {
     if (observations[key] == null) throw new Error(`Extractor must provide ${key}.`);
   }
@@ -50,11 +42,17 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
     validateCamera(request.camera);
     lastTime = request.time;
   }
+  if (new Set(requests.map(request => request.yaw)).size < MIN_PERSPECTIVES) {
+    throw new Error(`Refinement requires at least ${MIN_PERSPECTIVES} distinct yaw perspectives.`);
+  }
   for (const method of METHODS) {
     if (typeof feedback?.[method] !== 'function') throw new Error(`Feedback backend must implement ${method}().`);
   }
   for (const [key, method] of [['physics', 'simulate'], ['renderer', 'render'], ['diffusion', 'inpaint']]) {
     if (typeof renderAdapters[key]?.[method] !== 'function') throw new Error(`Backend must implement ${method}().`);
+  }
+  if (renderAdapters.prompter !== undefined && typeof renderAdapters.prompter?.compose !== 'function') {
+    throw new Error('Backend must implement compose().');
   }
   const directory = await mkdtemp(join(tmpdir(), 'digital-double-refine-'));
   try {
@@ -74,6 +72,7 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
     const identityEmbedding = Object.freeze(Array.from(embedding));
     let previous = null;
     let acceptedFrames = 0;
+    const acceptedYaws = new Set();
     let rejectedFrames = 0;
     for (const [index, request] of requests.entries()) {
       const frame = await render(bundle, request, renderAdapters, { state, identityEmbedding });
@@ -93,12 +92,16 @@ export async function refineSequence(library, sourceIdentity, targetIdentity, re
         }
         previous = { frame, hairMask, request };
         acceptedFrames++;
+        acceptedYaws.add(request.yaw);
       } else {
         rejectedFrames++;
       }
       if (onFrame) await onFrame({ frame, index, accepted });
     }
     if (acceptedFrames === 0) throw new Error('No frames passed the identity guard; no refined asset published.');
+    if (acceptedYaws.size < MIN_PERSPECTIVES) {
+      throw new Error(`Only ${acceptedYaws.size} accepted perspectives; at least ${MIN_PERSPECTIVES} are required.`);
+    }
     // Require a fresh body-texture export even when the source already has one.
     await rm(join(directory, OPTIONAL_ASSETS.bodyAlbedo), { force: true });
     await feedback.finalize({
