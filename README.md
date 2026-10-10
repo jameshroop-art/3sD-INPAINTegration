@@ -124,7 +124,7 @@ same contract applies to refinement `extract` observations.
 | `faceParsing` | BiSeNet face-parsing label map (for example the 19 CelebAMask-HQ classes: skin, brows, eyes, ears, nose, lips, hair, neck, …). Used for face texture placement and ControlNet conditioning. |
 | `bodyParsing` | Body-part parsing map (head, torso, upper/lower arms, hands, legs, feet, clothing) for rigging, skinning weights, and texture region assignment. |
 | `faceLandmarks` | `{ sparse, medium?, dense? }` (`FACE_LANDMARK_TIERS`): `sparse` is exactly 68 points (iBUG-68) and is always required. Add **at most one** face-crop add-on per pass: `medium` (at least 100, for example 106-point landmarks) or `dense` (at least 400, for example a 468/478-point mesh). Supplying both is rejected. Required for the `front` and both three-quarter views; `null` only when the face is not visible, such as rear, profile-occluded, or crown views. |
-| `poseMode` | Optional, one per pass (`POSE_MODES`): `body18` (18 points), `body25` (25, with feet) or `wholebody` (133 COCO-WholeBody: body, feet, 68 face, 2×21 hands). Defaults to `wholebody`, the OpenPose-full intricate rig. |
+| `poseMode` | Optional, one per pass (`POSE_MODES`, see [Pose modes](#pose-modes)): `body18`, `body25`, `openposeFull`, `wholebody` or `wholebody3d`. Defaults to `wholebody` (133), what the whole-body packs emit. |
 | `bodyJoints` | Exactly as many indexed points as `poseMode` defines. |
 | `keypointThreshold` | Optional, in `[0, 1]`; defaults to `KEYPOINT_THRESHOLD` (0.45). |
 
@@ -132,11 +132,47 @@ Point arrays keep the producing model's index order. Each entry is either a
 point with finite `x`, `y`, `z` and `confidence` in `[threshold, 1]`, or `null`
 when the model scored it below the keypoint threshold. Dropped points are
 `null`, never guessed or interpolated; points below the threshold are rejected
-rather than silently kept. Each set must keep at least one point. In 2D passes
-`z` is 0; only a depth-carrying model such as `rtmw3d` fills it. The framework
+rather than silently kept. Each set must keep at least one point. In 2D body
+modes every joint `z` must be 0; `wholebody3d` (rtmw3d) must carry depth (at
+least one nonzero `z`). Face mesh points may carry `z` in any mode. The framework
 validates structure only; matting accuracy, parsing quality, and landmark
 accuracy are the backend's responsibility and should be checked against ground
 truth.
+
+### Pose modes
+
+| `poseMode` | Points | Source | Intricate use |
+| --- | --- | --- | --- |
+| `body18` | 18 | `dw-ll_ucoco_384.onnx` body subset | Spine and limbs. Coarse pose only. |
+| `body25` | 25 | Same pack, body plus feet | Adds toes and heel so the stance locks. |
+| `openposeFull` | 128: 18 body, 68 face, 21 left hand, 21 right hand | DWPose regroup (`toOpenPoseFull`) | The ControlNet `openpose_full` map. |
+| `wholebody` | 133: 17 body, 6 feet, 68 face, 42 hands | `dw-ll_ucoco_384.onnx`, RTMW-x, RTMPose-l, RTMPose-t | Highest 2D mode these packs emit. Default. |
+| `wholebody3d` | 133 in xyz | `rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.onnx` | Same joints with depth. Single-view 3D. |
+
+Face sets ride alongside any mode in `faceLandmarks`: 68 (DWPose face or the
+dlib 68 `.dat`) always, plus at most one add-on: 106 (`2d106det.onnx`, extra
+lid, brow and lip points mapped onto the face overlay) or 468 (BFM
+`index_mp468_from_mesh35709.npy` seated on the 68; surface points used to warp
+the face, never drawn as a stick). Hands are 21 + 21 points with four joints per
+finger and are required for finger rigs.
+
+There is no multi-view OpenPose 3D weight and no BODY_25-only weight in this
+inventory; do not invent either. `wholebody3d` is single-view rtmw3d depth, not a
+multi-camera triangulator. Multi-view consistency comes from the calibrated
+views and mesh fitting, not from the pose model.
+
+`buildRig(joints, mode)` (exported from `src/rig.js`) turns validated joints
+into bones: shoulder–elbow–wrist, hip–knee–ankle, toe and heel bones off each
+ankle (`body25`, `wholebody*`), and each finger as a four-bone chain off its hand
+wrist. A bone is emitted only when both endpoints were kept; dropped (`null`)
+joints are never guessed. In `wholebody3d` each bone carries its xyz `length`;
+in 2D modes `length` is `null` because a screen stick has no bone length. The
+result also lists attachments: the 68 face points parent to the neck (the
+shoulder midpoint for COCO layouts) and each hand set to its body wrist.
+`toOpenPoseFull(joints)` regroups 133 whole-body joints into the 128-point
+`openposeFull` layout (deriving the neck from the shoulders and dropping feet)
+while keeping any depth, so the renderer can project it through the camera before
+drawing.
 
 ### Higher-point mapping
 
@@ -150,10 +186,11 @@ truth.
 | Hair | None in OpenPose | BiSeNet class 17 mask (`faceParsing`) | Not points. Parented to the head box. The strand map still needs a Lineart or SoftEdge ControlNet weight. |
 | Body surface | Joints only | Not available | No DensePose weight, so no UV surface from the rig. Rig 3D is joint depth, not a skinned mesh; the surface comes from [contoured mesh fitting](#contoured-mesh-fitting). |
 
-Pick one mode per pass. OpenPose full (`wholebody`) is the default intricate 2D
-rig. Add 106 or 468 only on the face crop. Add `rtmw3d` only when the rig must
-carry depth. Never feed 468 points into the OpenPose stick drawing: the
-ControlNet face overlay is 68 points.
+Pick one mode per pass. OpenPose full is the default intricate 2D drawing:
+compute `wholebody` joints and regroup them with `toOpenPoseFull`. Add 106 or 468
+only on the face crop. Use `wholebody3d` only when the rig must carry depth.
+Never feed 468 points into the OpenPose stick drawing: the ControlNet face
+overlay is 68 points.
 
 ### Rig order
 
@@ -170,6 +207,18 @@ ControlNet face overlay is 68 points.
    face contour). That image is the renderer's `keypoints` ControlNet condition.
    Body, hands, and face can each be drawn or omitted; omitting a part only
    changes the drawing, because the keypoints were already computed.
+
+When the rig must carry depth (`wholebody3d`):
+
+1. Person box from `yolox_l.onnx`.
+2. 2D whole-body from `dw-ll_ucoco_384.onnx`, so the joint order is known.
+3. `rtmw3d` on the same crop: xyz per joint in the same whole-body layout.
+4. `buildRig` in 3D: shoulder–elbow–wrist and hip–knee–ankle become bones with
+   length, not just screen sticks.
+5. Project xyz back to an OpenPose image for ControlNet, or keep xyz for a depth
+   or normal pass.
+6. Face 106 or 468 stays on the head joint, hands stay on the wrist joints, and
+   hair stays a BiSeNet mask parented to the head, not a 3D bone.
 
 ### Contoured mesh fitting
 
@@ -200,7 +249,7 @@ should serialize expensive builds; publication still prevents overwrite.
 
 ## Physics-guided frame contract
 
-`renderFrame(identity, request, { physics, renderer, diffusion })` loads a
+`renderFrame(identity, request, { physics, renderer, diffusion, prompter })` loads a
 validated stored identity without invoking reconstruction. `request` contains
 finite nonnegative `time` (seconds), `pose`, `scene`, and `dynamics`. The latter
 three are backend-defined; use explicit units for gravity, wind, stiffness,
@@ -217,11 +266,19 @@ damping, mass, and animation transforms.
    OpenPose image from step 5 of the [rig order](#rig-order): body and hand
    sticks plus the 68-point face contour only (never the 106 or 468 points). Map values may
    be buffers or paths, as agreed with diffusion.
-3. `diffusion.inpaint(...)` receives those maps, identity, and time. An adapter
-   can connect sd-cli, the inpainting checkpoint, multi-ControlNet (depth,
-   lineart, segmentation from `parsing`, and pose/face from `keypoints`), and a
-   hair LoRA. Model selection, ControlNet weights, and prompt configuration
-   belong to that adapter.
+3. Optional `prompter.compose(...)` receives identity, time, pose, scene,
+   camera, yaw, and the rendered `maps`, and returns `{ prompt, negativePrompt? }`
+   (a nonempty string and an optional string). Connect a local llama.cpp LLM, or
+   a VLM that reads `baldComposite` and the control maps, here to write
+   per-frame prompts describing the identified body parts, expression, and
+   pose. Without a prompter, prompt configuration stays in the diffusion
+   adapter. Keep the GGUF weights local and run llama.cpp without network access.
+4. `diffusion.inpaint(...)` receives those maps, identity, time, and any
+   `prompt`/`negativePrompt`. An adapter can connect stable-diffusion.cpp
+   `sd-cli`, the inpainting checkpoint, multi-ControlNet (depth, lineart,
+   segmentation from `parsing`, and pose/face from `keypoints`), and a hair
+   LoRA. It fills the gaps between the rendered mesh edges and the target view.
+   Model selection and ControlNet weights belong to that adapter.
 
 These are integration contracts, not built-in physics or rendering. There is
 no executable model plugin loader: integrate the exported API in your own
@@ -232,7 +289,7 @@ external rendering tools.
 
 `pipeline.refineSequence(sourceIdentity, targetIdentity, requests, adapters)`
 extends an existing prepared identity through sequential synthetic views.
-It uses the same `physics`, `renderer`, and `diffusion` adapters plus a
+It uses the same `physics`, `renderer`, `diffusion`, and optional `prompter` adapters plus a
 `feedback` backend and an optional async `onFrame` callback.
 
 The target must be a new identity name: existing identities remain immutable.
